@@ -507,8 +507,7 @@ def prepare_dataset(data_dir, dataset_name, tokenizer, train_bsz, train_seq_len,
         data_titles = os.path.join(data_dir, 'wikiPlots/titles')
         with open(data_plots, errors='ignore') as fp:
             plots_paragraphs = fp.read()
-
-        plots_paragraphs = plots_paragraphs.replace("\n", " ")
+        plots_paragraphs = plots_paragraphs.replace(os.linesep, " ")
         plots = plots_paragraphs.split("<EOS>")
         plots = plots[:len(plots)-1]
 
