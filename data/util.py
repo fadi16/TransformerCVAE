@@ -506,9 +506,19 @@ def prepare_dataset(data_dir, dataset_name, tokenizer, train_bsz, train_seq_len,
         data_plots = os.path.join(data_dir, 'wikiPlots/plots_paragraph')
         data_titles = os.path.join(data_dir, 'wikiPlots/titles')
         with open(data_plots, errors='ignore') as fp:
-            plots = fp.readlines()
+            plots_paragraphs = fp.read()
+
+        plots_paragraphs = plots_paragraphs.replace("\n", " ")
+        plots = plots_paragraphs.split("<EOS>")
+        plots = plots[:len(plots)-1]
+
         with open(data_titles, errors='ignore') as ft:
             titles = ft.readlines()
+        #titles = [t for t in titles if t != "" and not t.isspace()]
+
+        print("no. plots = ", len(plots))
+        print("np. titles = ", len(titles))
+        assert len(plots) == len(titles), "No. plots != No. titles"
 
         texts = [(t, p) for t, p in zip(titles, plots) if t.strip() != '' and p.strip() != '']
         print('Done.')
