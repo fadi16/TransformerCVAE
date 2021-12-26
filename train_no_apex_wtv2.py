@@ -26,6 +26,7 @@ from rouge import Rouge
 
 from sklearn.manifold import TSNE
 import matplotlib
+
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
@@ -62,14 +63,16 @@ def compute_loss(device, model, x_mask, x_tokens, y_mask, y_tokens, input_tokens
     return loss, ce_loss, kl_loss
 
 
-def compute_loss_ae(device, model, x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask, loss_fn, beta):
+def compute_loss_ae(device, model, x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask, loss_fn,
+                    beta):
     input_tokens = input_tokens.to(device)
     target_tokens = target_tokens.to(device)
     mask = mask.to(device)
     x_mask = x_mask.to(device)
     x_tokens = x_tokens.to(device)
 
-    outputs = model(input_ids=input_tokens, attention_mask=mask, y_mask=x_mask, y_tokens=x_tokens, from_mean=True, from_prior=False)
+    outputs = model(input_ids=input_tokens, attention_mask=mask, y_mask=x_mask, y_tokens=x_tokens, from_mean=True,
+                    from_prior=False)
 
     logits = outputs[0]
     kl_loss = outputs[-1]
@@ -89,17 +92,18 @@ def compute_loss_ae(device, model, x_mask, x_tokens, y_mask, y_tokens, input_tok
     return loss, ce_loss, kl_loss
 
 
-def train_step(device, model, optimizer, x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask, loss_fn, beta, model_type):
+def train_step(device, model, optimizer, x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask, loss_fn,
+               beta, model_type):
     output = []
     if model_type == 'ae_vae_fusion':
         optimizer.zero_grad()
         loss, ce_loss, kl_loss = compute_loss_ae(device, model, x_mask, x_tokens, y_mask, y_tokens, input_tokens,
-                                              target_tokens, mask, loss_fn, beta)
+                                                 target_tokens, mask, loss_fn, beta)
         # with amp.scale_loss(loss, optimizer) as scaled_loss:
         #     scaled_loss.backward()
         #     torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), 5.0)  # max_grad_norm=1.0
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0) # max_grad_norm=1.0
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)  # max_grad_norm=1.0
         optimizer.step()
         output.append((loss.item(), ce_loss.mean().item(), kl_loss.item()))
 
@@ -110,7 +114,7 @@ def train_step(device, model, optimizer, x_mask, x_tokens, y_mask, y_tokens, inp
     #     scaled_loss.backward()
     #     torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), 5.0)  # max_grad_norm=1.0
     loss.backward()
-    torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0) # max_grad_norm=1.0
+    torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)  # max_grad_norm=1.0
     optimizer.step()
     output.append((loss.item(), ce_loss.mean().item(), kl_loss.item()))
 
@@ -149,27 +153,9 @@ def top_k_top_p_filtering(logits, top_k=100, top_p=0.95, filter_value=-float('In
     return logits
 
 
-def repeat_score(text, ngram=[3, 4, 5, 6]):
-    ngram_list = []
-    for ng in ngram:
-        ngram_list.append([text[idx:idx + ng] for idx in range(len(text) - ng - 1)])
-
-    max_occurs = []
-    for ngrams in ngram_list:
-        count_result = Counter([' '.join(n) for n in ngrams])
-        try:
-            max_occurs.append(
-                max(count_result.values())
-            )
-        except:
-            pass
-
-    scores = [max_oc / ((len(text) / ngram[idx]) + ngram[idx]) for idx, max_oc in enumerate(max_occurs)]
-    return max(scores) if len(scores) >= 1 else 1.0
-
-
 def sample_sequence(model, tokenizer, length, batch_size=None, x_mask=None, x_tokens=None, y_mask=None, y_tokens=None,
-                    temperature=1, top_k=100, top_p=0.95, device='cuda', sample=True, eos_token=None, model_type='cvae'):
+                    temperature=1, top_k=100, top_p=0.95, device='cuda', sample=True, eos_token=None,
+                    model_type='cvae'):
     x_mask = x_mask.to(device)
     x_tokens = x_tokens.to(device)
     y_mask = y_mask.to(device)
@@ -190,14 +176,15 @@ def sample_sequence(model, tokenizer, length, batch_size=None, x_mask=None, x_to
             z = latent_mean
             assert not torch.isnan(z).any(), 'training get nan z'
 
-        _, mem = model.transformer(input_ids=x_tokens[:, :-1], past=None, attention_mask=x_mask[:, :-1], representations=z)
+        _, mem = model.transformer(input_ids=x_tokens[:, :-1], past=None, attention_mask=x_mask[:, :-1],
+                                   representations=z)
         prev = x_tokens[:, -1].view(batch_size, -1)
 
         output = prev
         probability = torch.tensor([], dtype=z.dtype, device=device)
         if_end = torch.tensor([False] * batch_size, dtype=torch.bool, device=device)
 
-        for i in range(length): #trange
+        for i in range(length):  # trange
             logits, mem = model.transformer(input_ids=prev, past=mem, representations=z)
 
             logits = model.lm_head(logits)
@@ -233,12 +220,16 @@ def main():
 
     parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
     parser.add_argument('--model_type', type=str, default='cvae', choices=['cvae', 'ae_vae_fusion'])
-    parser.add_argument('--iterations', type=int, default=300001)#101640 * 4)  # wp 850001  wi 300001 ax 300001 yp 800001
-    # wiki plots
-    parser.add_argument('--dataset', type=str, default='wi', choices=['ax', 'yp', 'wp', 'wi'], help="Dataset to use for training")
-    parser.add_argument('--warmup', type=int, default=10000,
+    # todo: really
+    parser.add_argument('--iterations', type=int,
+                        default=7000)  # 101640 * 4)  # wp 850001  wi 300001 ax 300001 yp 800001
+    # WordTreev2
+    parser.add_argument('--dataset', type=str, default='wtv2', choices=['wtv2'],
+                        help="Dataset to use for training")
+    # todo: really
+    parser.add_argument('--warmup', type=int, default=1500,
                         help="Amount of iterations to warmup, then decay. (-1 for no warmup and decay)")
-
+    # todo: need to chnage? tried to change this to 2 and it stopped working on laptop
     parser.add_argument('--batch-sizes', nargs='+', type=int, default=[1],
                         help='batch size per GPU. Lists the schedule.')
     parser.add_argument('--seq-lens', nargs='+', type=int, default=[1024],
@@ -247,7 +238,7 @@ def main():
                         help="Percentage of iterations to spend on short sequence training.")
     parser.add_argument('--data-dir', type=str, default='data')
     parser.add_argument('--out-dir', type=str, default='out')
-    parser.add_argument('--load', type=str, help='path to load model from') # , default='out/test/'
+    parser.add_argument('--load', type=str, help='path to load model from')  # , default='out/test/'
     parser.add_argument('--workers', default=1, type=int, metavar='N',
                         help='number of data loading workers')
     # use GPU
@@ -257,10 +248,12 @@ def main():
     parser.add_argument('--fp16', action='store_true', help="Train using FP16?")
     parser.add_argument('--fp16_opt_level', default='O0', type=str, required=False)
 
+    # todo: why is this not implemented?
     # KL cost annealing, increase beta from beta_0 to 1 in beta_warmup steps
     parser.add_argument('--beta_0', default=1.00, type=float)
     parser.add_argument('--beta_warmup', type=int, default=50000)
     # cyc_vae parameters
+    # todo: what is this
     parser.add_argument('--cycle', type=int, default=101640)
 
     parser.add_argument('--add_input', action="store_true")
@@ -271,7 +264,7 @@ def main():
     parser.add_argument('--learn_prior', action="store_true")
 
     args = parser.parse_args('test --batch-sizes 1 --seq-lens 1024 '
-                             '--add_input --learn_prior --fp16'.split()) # wi.12.proj_vary_beta_cvae
+                             '--add_input --learn_prior --fp16'.split())  # wi.12.proj_vary_beta_cvae
 
     if args.model_type == 'cvae':
         args.learn_prior = True
@@ -318,18 +311,6 @@ def main():
     print('gpt2_params:', num_params(gpt2_model))  # gpt2: 124439808
     config = GPT2Config()
 
-    # add special tokens
-    # special_tokens_dict = {
-    #     'pad_token': '<|startoftext|>',
-    #     'cls_token': '<|startofcond|>',
-    #     'sep_token': '<|sepofcond|>',
-    #     'mask_token': '<|endofcond|>'
-    # }
-    # num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
-    # print('We have added', num_added_toks, 'special tokens')
-    # # Notice: resize_token_embeddings expect to receive the full size of the new vocab
-    # gpt2_model.resize_token_embeddings(len(tokenizer))
-    # assert tokenizer.pad_token == '<|startoftext|>'
 
     VAE = VAEModel(config, add_input=args.add_input, add_attn=args.add_attn, add_softmax=args.add_softmax,
                    attn_proj_vary=args.attn_proj_vary, learn_prior=args.learn_prior)
@@ -341,7 +322,6 @@ def main():
     VAE.lm_head.weight = gpt2_model.lm_head.weight
     if VAE.add_softmax:
         VAE.lm_head_rep = Conv1D(*gpt2_model.lm_head.weight.size())
-        # VAE.lm_head_rep = LM_head_rep(*gpt2_model.lm_head.weight.size()[::-1])
     print('VAE_params:', num_params(VAE))  # 286694400
     if args.load:
         print('Loading model weights...')
@@ -356,14 +336,17 @@ def main():
     print('Done.')
 
     # fix pre-trained parameters before certain iterations
-    tuning_all_after_iters = 40000
+    # todo: isn't this too much for WTv2?
+    # todo: really
+    tuning_all_after_iters = 600
     tuning_all = False
     for name, parameter in VAE.named_parameters():
         # print((name, parameter.requires_grad))
-        new_pars = ['c_z', 'attention_weights', 'mean', 'logvar', 'input_proj', 'attn_proj', 'Nu_fc1', 'Nu_fc2', 'lm_head_rep']
+        new_pars = ['c_z', 'attention_weights', 'mean', 'logvar', 'input_proj', 'attn_proj', 'Nu_fc1', 'Nu_fc2',
+                    'lm_head_rep']
 
         if not any([True if n in name else False for n in new_pars]):
-           parameter.requires_grad = False
+            parameter.requires_grad = False
 
     print('Setup data...')
     # Batch and sequence length schedule
@@ -395,7 +378,7 @@ def main():
 
     optimizer = AdamW(VAE.parameters(), lr=args.lr, correct_bias=True)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_schedule)
-    #VAE, optimizer = amp.initialize(VAE, optimizer, opt_level=args.fp16_opt_level)
+    # VAE, optimizer = amp.initialize(VAE, optimizer, opt_level=args.fp16_opt_level)
 
     loss_fn = nn.CrossEntropyLoss(reduction='none')
     print('Done.')
@@ -430,7 +413,7 @@ def main():
                                                               input_tokens, target_tokens, mask, loss_fn, 1.0)
                     else:
                         loss, ce_loss, kl_loss = compute_loss_ae(device, VAE, x_mask, x_tokens, y_mask, y_tokens,
-                                                              input_tokens, target_tokens, mask, loss_fn, 1.0)
+                                                                 input_tokens, target_tokens, mask, loss_fn, 1.0)
 
                 if len(target_tokens.size()) == 1:
                     target_tokens = target_tokens.unsqueeze(0)
@@ -438,6 +421,7 @@ def main():
 
                 text = target_tokens[0, :].tolist()
                 logprob = ce_loss.tolist()
+                # todo this fails when batch sizes != 1, why?????
                 assert len(text) == len(logprob)
 
                 # only for story
@@ -492,6 +476,7 @@ def main():
         X_emb = None
         y = None
 
+        # todo: think on how you can cluster explanations/questions together
         # test_iter = iter(test_loader); x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask = next(test_iter)
         with tqdm(total=len(test_loader)) as pbar:
             for i, (x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask) in enumerate(
@@ -719,7 +704,8 @@ def main():
 
         VAE.train()
 
-    test_plot(test_loader, num_iters)
+    # todo no plotting for word tree for now
+    #test_plot(test_loader, num_iters)
     val_step(val_loader)
     generate(test_loader, num_iters)
     torch.save(VAE.state_dict(), os.path.join(save_folder, 'model_' + '{:07d}'.format(num_iters) + '.pt'))
@@ -778,17 +764,18 @@ def main():
                     beta = args.beta_0
                     logging.info('KL annealing restart')
 
-                if num_iters % 10000 == 0:
-                    test_plot(test_loader, num_iters)
+                if num_iters % 200 == 0:
+                    #test_plot(test_loader, num_iters)
                     val_step(val_loader)
                     generate(test_loader, num_iters)
 
-                if num_iters % 50000 == 0:
+                if num_iters % 1100 == 0:
                     print('Saving model...')
                     logging.info("Iteration completed: %d, remained %d" % (num_iters, args.iterations - num_iters))
                     logging.info("Saving model...")
                     logging.info('\n------------------------------------------------------')
-                    torch.save(VAE.state_dict(), os.path.join(save_folder, 'model_' + '{:07d}'.format(num_iters) + '.pt'))
+                    torch.save(VAE.state_dict(),
+                               os.path.join(save_folder, 'model_' + '{:07d}'.format(num_iters) + '.pt'))
 
                 if args.switch_time > 0 and num_iters == int(args.iterations * args.switch_time):
                     print('Switch to long sequence training')

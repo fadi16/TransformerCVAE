@@ -274,6 +274,7 @@ def run_model():
                 raise ValueError("Can't get samples longer than window size: %s" % VAE.config.n_ctx)
 
             eff_samples = []
+            # these are the golden references
             n, l = target_tokens.size()
             storys = [tokenizer.decode(target_tokens[i, :]) for i in range(n)]
             storys_str = [s[:s.find("<|endoftext|>") + len("<|endoftext|>")] if "<|endoftext|>" in s else s for s in storys]
@@ -308,12 +309,6 @@ def run_model():
                         text = text[:idx]
 
                     text = tokenizer.decode(text).strip()
-
-                    # score for one long text, higher than 0.075 usually means repetition
-                    # rep_score = repeat_score(text.split(), ngram=[3, 4, 5, 6, 7, 8])
-                    # if rep_score > 0.075:
-                    #     # print(rep_score)
-                    #     continue
 
                     try:
                         # check bleu

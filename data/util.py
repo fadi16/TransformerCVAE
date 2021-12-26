@@ -3,6 +3,7 @@ from data.prompt_dataset import *
 from data.plot_dataset import *
 from data.arxiv_dataset import *
 from data.yelp_dataset import *
+from data.wtv2_dataset import *
 import torch
 import torch.utils.data as data
 from torch.utils.data.distributed import DistributedSampler
@@ -17,6 +18,7 @@ from scipy.spatial.distance import cdist
 from bert_serving.client import BertClient
 from tqdm import trange
 from random import shuffle
+import pandas as pd
 
 
 def compose(*functions):
@@ -124,150 +126,6 @@ def extract_keywords(text, r):
     key = [re.sub(' (\'|\.|\,|\:|\?|\!|;)', '\g<1>', k.strip('\'.,:?!;" ')) for k in r.get_ranked_phrases()[:num]]
     return key
 
-
-# def insert_keywords(tokenizer, data_type):
-#     def f(text_raw_dict):
-#         # 'prompt' in text_raw_dict --> wp dataset; 'title' in text_raw_dict --> wi dataset and other well preprocessed dataset
-#         summary = text_raw_dict['prompt'] if 'prompt' in text_raw_dict else text_raw_dict['title']
-#         story = text_raw_dict['story']
-#
-#         if data_type == 't0':  # x, y, y
-#             if 'prompt' in text_raw_dict:
-#                 pp = get_paragraph(story)
-#                 story = '\n\n'.join(pp)
-#             else:
-#                 pp = story.split('<newline><newline>')
-#                 story = '\n\n'.join(pp)
-#
-#             return summary, story + tokenizer.eos_token, tokenizer.eos_token + story + tokenizer.eos_token
-#         elif data_type == 't1':  # x, x + y, y
-#             if 'prompt' in text_raw_dict:
-#                 pp = get_paragraph(story)
-#                 story = '\n\n'.join(pp)
-#             else:
-#                 pp = story.split('<newline><newline>')
-#                 story = '\n\n'.join(pp)
-#
-#             return summary, summary + tokenizer.eos_token + story + tokenizer.eos_token, tokenizer.eos_token + story + tokenizer.eos_token
-#         elif data_type == 't2':  # x, x + o + y, y, append
-#             if 'title' in text_raw_dict:
-#                 pp = story.split('<newline><newline>')
-#             else:
-#                 pp = get_paragraph(story)
-#
-#             story = '\n\n'.join(pp)
-#
-#             # extract keywords
-#             r = Rake(min_length=1, max_length=4)
-#             keys = [extract_keywords(text, r) for text in pp]
-#             keys_str = [tokenizer.cls_token + tokenizer.sep_token.join(key) + tokenizer.mask_token for key in keys]
-#             story_appended = summary + ''.join(keys_str) + tokenizer.eos_token + '\n\n'.join(pp)
-#             return summary, story_appended + tokenizer.eos_token, tokenizer.eos_token + story + tokenizer.eos_token
-#         elif data_type == 't3':  # x, x + o + y, y, insert
-#             if 'title' in text_raw_dict:
-#                 pp = story.split('<newline><newline>')
-#             else:
-#                 pp = get_paragraph(story)
-#
-#             story = '\n\n'.join(pp)
-#
-#             # extract keywords
-#             r = Rake(min_length=1, max_length=4)
-#             keys = [extract_keywords(text, r) for text in pp]
-#             keys_str = [tokenizer.cls_token + tokenizer.sep_token.join(key) + tokenizer.mask_token for key in keys]
-#             keys_str[0] += tokenizer.eos_token
-#             story_inserted = summary + ''.join([k + pt for k, pt in zip(keys_str, pp)])
-#             return summary, story_inserted + tokenizer.eos_token, tokenizer.eos_token + story + tokenizer.eos_token
-#         elif data_type == 't4':  # x + o, y, y
-#             if 'title' in text_raw_dict:
-#                 pp = story.split('<newline><newline>')
-#             else:
-#                 pp = get_paragraph(story)
-#
-#             story = '\n\n'.join(pp)
-#
-#             # extract keywords
-#             r = Rake(min_length=1, max_length=4)
-#             keys = [extract_keywords(text, r) for text in pp]
-#             keys_str = [tokenizer.cls_token + tokenizer.sep_token.join(key) + tokenizer.mask_token for key in keys]
-#             return summary + ''.join(keys_str), story + tokenizer.eos_token, tokenizer.eos_token + story + tokenizer.eos_token
-#         elif data_type == 't5':  # x + o, x + o + y, y, append
-#             if 'title' in text_raw_dict:
-#                 pp = story.split('<newline><newline>')
-#             else:
-#                 pp = get_paragraph(story)
-#
-#             story = '\n\n'.join(pp)
-#
-#             # extract keywords
-#             r = Rake(min_length=1, max_length=4)
-#             keys = [extract_keywords(text, r) for text in pp]
-#             keys_str = [tokenizer.cls_token + tokenizer.sep_token.join(key) + tokenizer.mask_token for key in keys]
-#             story_appended = summary + ''.join(keys_str) + tokenizer.eos_token + '\n\n'.join(pp)
-#             return summary + ''.join(keys_str), story_appended + tokenizer.eos_token, tokenizer.eos_token + story + tokenizer.eos_token
-#         elif data_type == 't6':  # x + o, x + o + y, y, insert
-#             if 'title' in text_raw_dict:
-#                 pp = story.split('<newline><newline>')
-#             else:
-#                 pp = get_paragraph(story)
-#
-#             story = '\n\n'.join(pp)
-#
-#             # extract keywords
-#             r = Rake(min_length=1, max_length=4)
-#             keys = [extract_keywords(text, r) for text in pp]
-#             keys_str = [tokenizer.cls_token + tokenizer.sep_token.join(key) + tokenizer.mask_token for key in keys]
-#             keys_str[0] += tokenizer.eos_token
-#             story_inserted = summary + ''.join([k + pt for k, pt in zip(keys_str, pp)])
-#             return summary + ''.join(keys_str), story_inserted + tokenizer.eos_token, tokenizer.eos_token + story + tokenizer.eos_token
-#         elif data_type == 't7':  # x + o, x + o + y, y, append, extend
-#             if 'title' in text_raw_dict:
-#                 pp = story.split('<newline><newline>')
-#             else:
-#                 pp = get_paragraph(story)
-#
-#             story = '\n\n'.join(pp)
-#
-#             # extract keywords
-#             r = Rake(min_length=1, max_length=4)
-#             keys = [extract_keywords(text, r) for text in pp]
-#             keys_str = [tokenizer.cls_token + tokenizer.sep_token.join(key) + tokenizer.mask_token for key in keys]
-#             keys_str[0] += tokenizer.eos_token
-#
-#             extended_res = []
-#             for i in range(len(pp)):
-#                 k_i, p_i = keys_str[:i], pp[:i]
-#                 out_i = summary + ''.join(k_i)
-#                 story_appended_i = summary + ''.join(k_i) + tokenizer.eos_token + '\n\n'.join(p_i) + tokenizer.eos_token
-#                 story_i = tokenizer.eos_token + '\n\n'.join(p_i) + tokenizer.eos_token
-#                 extended_res.append((out_i, story_appended_i, story_i))
-#             return extended_res
-#         elif data_type == 't8':  # x + o, x + o + y, y, insert, extend
-#             if 'title' in text_raw_dict:
-#                 pp = story.split('<newline><newline>')
-#             else:
-#                 pp = get_paragraph(story)
-#
-#             story = '\n\n'.join(pp)
-#
-#             # extract keywords
-#             r = Rake(min_length=1, max_length=4)
-#             keys = [extract_keywords(text, r) for text in pp]
-#             keys_str = [tokenizer.cls_token + tokenizer.sep_token.join(key) + tokenizer.mask_token for key in keys]
-#             keys_str[0] += tokenizer.eos_token
-#
-#             extended_res = []
-#             for i in range(len(pp)):
-#                 k_i, p_i = keys_str[:i], pp[:i]
-#                 out_i = summary + ''.join(k_i)
-#                 story_inserted_i = summary + ''.join([k + pt for k, pt in zip(k_i, p_i)]) + tokenizer.eos_token
-#                 story_i = tokenizer.eos_token + '\n\n'.join(p_i) + tokenizer.eos_token
-#                 extended_res.append((out_i, story_inserted_i, story_i))
-#             return extended_res
-#         else:
-#             raise Exception('Data type not implemented.')
-#
-#     return f
 
 
 def insert_keywords(tokenizer, data_type):
@@ -509,11 +367,11 @@ def prepare_dataset(data_dir, dataset_name, tokenizer, train_bsz, train_seq_len,
             plots_paragraphs = fp.read()
         plots_paragraphs = plots_paragraphs.replace(os.linesep, " ")
         plots = plots_paragraphs.split("<EOS>")
-        plots = plots[:len(plots)-1]
+        plots = plots[:len(plots) - 1]
 
         with open(data_titles, errors='ignore') as ft:
             titles = ft.readlines()
-        #titles = [t for t in titles if t != "" and not t.isspace()]
+        # titles = [t for t in titles if t != "" and not t.isspace()]
 
         print("no. plots = ", len(plots))
         print("np. titles = ", len(titles))
@@ -564,6 +422,97 @@ def prepare_dataset(data_dir, dataset_name, tokenizer, train_bsz, train_seq_len,
                                            drop_last=True,
                                            num_workers=num_workers,
                                            collate_fn=test_collate_fn) if d_test else None)
+
+    # todo: change this, copied from "wi"
+    elif dataset_name == 'wtv2':
+        EXPLANATION = "explanation"
+        QUESTION_AND_ANSWER = "question_and_answer"
+        EXPLANATION_TYPE = "explanation_type"
+        QUESTION_ANSWER_AND_EXPLANATION_TYPE_SEP = " && "
+
+        train_collate_fn = collate_fn
+        val_collate_fn = collate_fn
+        test_collate_fn = collate_fn
+
+        print('Loading Word Tree v2 dataset...')
+        train_data_path = os.path.join(data_dir, 'wordTreev2/train_data_with_explanations_types.csv')
+        val_data_path = os.path.join(data_dir, 'wordTreev2/dev_data_with_explanations_types.csv')
+        test_data_path = os.path.join(data_dir, 'wordTreev2/test_data_with_explanations_types.csv')
+
+        # train
+        train_question_answer_features = []
+        df_train = pd.read_csv(train_data_path, delimiter="\t")
+        train_explanations = df_train[EXPLANATION]
+        train_questions_and_answers = df_train[QUESTION_AND_ANSWER]
+        train_explanation_types = df_train[EXPLANATION_TYPE]
+        for i in range(len(train_explanation_types)):
+            train_question_answer_features.append(train_questions_and_answers[i] + QUESTION_ANSWER_AND_EXPLANATION_TYPE_SEP + train_explanation_types[i])
+        assert len(train_question_answer_features) == len(train_explanations)
+
+        # val
+        val_question_answer_features = []
+        df_val = pd.read_csv(val_data_path, delimiter="\t")
+        val_explanations = df_val[EXPLANATION]
+        val_questions_and_answers = df_val[QUESTION_AND_ANSWER]
+        val_explanation_types = df_val[EXPLANATION_TYPE]
+        for i in range(len(val_explanation_types)):
+            val_question_answer_features.append(val_questions_and_answers[i] + QUESTION_ANSWER_AND_EXPLANATION_TYPE_SEP + val_explanation_types[i])
+        assert len(val_question_answer_features) == len(val_explanations)
+
+        # test
+        test_question_answer_features = []
+        df_test = pd.read_csv(test_data_path, delimiter="\t")
+        test_explanations = df_test[EXPLANATION]
+        test_questions_and_answers = df_test[QUESTION_AND_ANSWER]
+        test_explanation_types = df_test[EXPLANATION_TYPE]
+        for i in range(len(test_explanation_types)):
+            test_question_answer_features.append(test_questions_and_answers[i] + QUESTION_ANSWER_AND_EXPLANATION_TYPE_SEP + test_explanation_types[i])
+        assert len(test_question_answer_features) == len(test_explanations)
+
+        train_text = [(t, p) for t, p in zip(train_question_answer_features, train_explanations) if t.strip() != '' and p.strip() != '']
+        val_text = [(t, p) for t, p in zip(val_question_answer_features, val_explanations) if t.strip() != '' and p.strip() != '']
+        test_text = [(t, p) for t, p in zip(test_question_answer_features, test_explanations) if t.strip() != '' and p.strip() != '']
+
+        print('Done.')
+
+        if make_train:
+            train_preproc = Preprocessor(tokenizer, train_seq_len, data_type)
+            d_train = WordTreev2Dataset(train_text, train_preproc)
+            if data_type == 't7' or data_type == 't8':
+                d_train = [t for lt in d_train for t in lt]
+            print('Train dataset size', len(d_train))
+            loaders.append(data.DataLoader(d_train,
+                                           batch_size=train_bsz,
+                                           pin_memory=True,
+                                           drop_last=True,
+                                           num_workers=num_workers,
+                                           collate_fn=train_collate_fn) if d_train else None)
+        if make_val:
+            val_preproc = Preprocessor(tokenizer, val_seq_len, data_type)
+            d_val = WordTreev2Dataset(val_text, val_preproc)
+            if data_type == 't7' or data_type == 't8':
+                d_val = [t for lt in d_val for t in lt]
+            print('Val dataset size', len(d_val))
+            loaders.append(data.DataLoader(d_val,
+                                           batch_size=val_bsz,
+                                           pin_memory=True,
+                                           drop_last=True,
+                                           num_workers=num_workers,
+                                           collate_fn=val_collate_fn) if d_val else None)
+        if make_test:
+            test_preproc = Preprocessor(tokenizer, test_seq_len, data_type)
+            d_test = WordTreev2Dataset(test_text, test_preproc)
+            if data_type == 't7' or data_type == 't8':
+                d_test = [t for lt in d_test for t in lt]
+            print('Test dataset size', len(d_test))
+            loaders.append(data.DataLoader(d_test,
+                                           batch_size=test_bsz,
+                                           pin_memory=True,
+                                           drop_last=True,
+                                           num_workers=num_workers,
+                                           collate_fn=test_collate_fn) if d_test else None)
+
+
     elif dataset_name == 'ax':
         train_collate_fn = collate_fn
         val_collate_fn = collate_fn
@@ -571,31 +520,31 @@ def prepare_dataset(data_dir, dataset_name, tokenizer, train_bsz, train_seq_len,
 
         print('Loading arxiv dataset...')
         data_abs = os.path.join(data_dir, 'arxiv/artificial intelligence_10047_15000_15_abs.txt')
-        data_titles = os.path.join(data_dir, 'arxiv/artificial intelligence_10047_15000_15_title.txt')
+        data_question_answer_features = os.path.join(data_dir, 'arxiv/artificial intelligence_10047_15000_15_title.txt')
         with open(data_abs, errors='ignore') as fp:
             abs = fp.readlines()
-        with open(data_titles, errors='ignore') as ft:
-            titles = ft.readlines()
-        assert len(titles) == len(abs)
-        ai_data = [('ai', t.strip(), p.strip()) for t, p in zip(titles, abs) if t.strip() != '' and p.strip() != '']
+        with open(data_question_answer_features, errors='ignore') as ft:
+            question_answer_features = ft.readlines()
+        assert len(question_answer_features) == len(abs)
+        ai_data = [('ai', t.strip(), p.strip()) for t, p in zip(question_answer_features, abs) if t.strip() != '' and p.strip() != '']
 
         data_abs = os.path.join(data_dir, 'arxiv/computer vision_14582_15000_15_abs.txt')
-        data_titles = os.path.join(data_dir, 'arxiv/computer vision_14582_15000_15_title.txt')
+        data_question_answer_features = os.path.join(data_dir, 'arxiv/computer vision_14582_15000_15_title.txt')
         with open(data_abs, errors='ignore') as fp:
             abs = fp.readlines()
-        with open(data_titles, errors='ignore') as ft:
-            titles = ft.readlines()
-        assert len(titles) == len(abs)
-        cv_data = [('cv', t.strip(), p.strip()) for t, p in zip(titles, abs) if t.strip() != '' and p.strip() != '']
+        with open(data_question_answer_features, errors='ignore') as ft:
+            question_answer_features = ft.readlines()
+        assert len(question_answer_features) == len(abs)
+        cv_data = [('cv', t.strip(), p.strip()) for t, p in zip(question_answer_features, abs) if t.strip() != '' and p.strip() != '']
 
         data_abs = os.path.join(data_dir, 'arxiv/language generation_14514_15000_15_abs.txt')
-        data_titles = os.path.join(data_dir, 'arxiv/language generation_14514_15000_15_title.txt')
+        data_question_answer_features = os.path.join(data_dir, 'arxiv/language generation_14514_15000_15_title.txt')
         with open(data_abs, errors='ignore') as fp:
             abs = fp.readlines()
-        with open(data_titles, errors='ignore') as ft:
-            titles = ft.readlines()
-        assert len(titles) == len(abs)
-        lg_data = [('lg', t.strip(), p.strip()) for t, p in zip(titles, abs) if t.strip() != '' and p.strip() != '']
+        with open(data_question_answer_features, errors='ignore') as ft:
+            question_answer_features = ft.readlines()
+        assert len(question_answer_features) == len(abs)
+        lg_data = [('lg', t.strip(), p.strip()) for t, p in zip(question_answer_features, abs) if t.strip() != '' and p.strip() != '']
 
         texts = ai_data + cv_data + lg_data
         shuffle(texts)
