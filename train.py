@@ -18,6 +18,7 @@ import copy
 from apex.optimizers import FusedAdam
 from apex import amp
 from apex.fp16_utils import FP16_Optimizer
+from google.colab import files
 
 from data.util import *
 from util import *
@@ -599,6 +600,11 @@ def main():
 
         VAE.train()
 
+    def save_outputs(no_iter):
+        os.system("zip -r out/ CVAE_WIKI_PLOTS_OUT_{0}.zip".format(no_iter % 50000))
+        files.download("CVAE_WIKI_PLOTS_OUT.zip")
+
+
     def generate(test_loader, num_iters):
         VAE.eval()
 
@@ -801,6 +807,7 @@ def main():
                     logging.info("Saving model...")
                     logging.info('\n------------------------------------------------------')
                     torch.save(VAE.state_dict(), os.path.join(save_folder, 'model_' + '{:07d}'.format(num_iters) + '.pt'))
+                    save_outputs(num_iters)
 
                 if args.switch_time > 0 and num_iters == int(args.iterations * args.switch_time):
                     print('Switch to long sequence training')
