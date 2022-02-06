@@ -423,6 +423,77 @@ def prepare_dataset(data_dir, dataset_name, tokenizer, train_bsz, train_seq_len,
                                            num_workers=num_workers,
                                            collate_fn=test_collate_fn) if d_test else None)
 
+    elif dataset_name == 'wi-small':
+        train_collate_fn = collate_fn
+        val_collate_fn = collate_fn
+        test_collate_fn = collate_fn
+
+        print('Loading wikiplot dataset...')
+        data_plots = os.path.join(data_dir, 'wikiPlots/plots_paragraph')
+        data_titles = os.path.join(data_dir, 'wikiPlots/titles')
+        with open(data_plots, errors='ignore') as fp:
+            plots_paragraphs = fp.read()
+        plots_paragraphs = plots_paragraphs.replace(os.linesep, " ")
+        plots = plots_paragraphs.split("<EOS>")
+        plots = plots[:len(plots) - 1]
+        # use 5000 plots for small dataset
+        plots = plots[:5000]
+
+        with open(data_titles, errors='ignore') as ft:
+            titles = ft.readlines()
+        # use 5000 titles
+        titles = titles[:5000]
+
+        print("no. plots = ", len(plots))
+        print("np. titles = ", len(titles))
+        assert len(plots) == len(titles), "No. plots != No. titles"
+
+        texts = [(t, p) for t, p in zip(titles, plots) if t.strip() != '' and p.strip() != '']
+        print('Done.')
+        train_text = texts[:int(len(texts) * 0.9)]
+        val_text = texts[int(len(texts) * 0.9):int(len(texts) * 0.95)]
+        test_text = texts[int(len(texts) * 0.95):]
+
+        if make_train:
+            train_preproc = Preprocessor(tokenizer, train_seq_len, data_type)
+            d_train = PlotDataset(train_text, train_preproc)
+            if data_type == 't7' or data_type == 't8':
+                d_train = [t for lt in d_train for t in lt]
+            print('Train dataset size', len(d_train))
+            loaders.append(data.DataLoader(d_train,
+                                           # sampler=DistributedSampler(d_train) if distributed else None,
+                                           batch_size=train_bsz,
+                                           pin_memory=True,
+                                           drop_last=True,
+                                           num_workers=num_workers,
+                                           collate_fn=train_collate_fn) if d_train else None)
+        if make_val:
+            val_preproc = Preprocessor(tokenizer, val_seq_len, data_type)
+            d_val = PlotDataset(val_text, val_preproc)
+            if data_type == 't7' or data_type == 't8':
+                d_val = [t for lt in d_val for t in lt]
+            print('Val dataset size', len(d_val))
+            loaders.append(data.DataLoader(d_val,
+                                           # sampler=DistributedSampler(d_val),
+                                           batch_size=val_bsz,
+                                           pin_memory=True,
+                                           drop_last=True,
+                                           num_workers=num_workers,
+                                           collate_fn=val_collate_fn) if d_val else None)
+        if make_test:
+            test_preproc = Preprocessor(tokenizer, test_seq_len, data_type)
+            d_test = PlotDataset(test_text, test_preproc)
+            if data_type == 't7' or data_type == 't8':
+                d_test = [t for lt in d_test for t in lt]
+            print('Test dataset size', len(d_test))
+            loaders.append(data.DataLoader(d_test,
+                                           # sampler=DistributedSampler(d_val),
+                                           batch_size=test_bsz,
+                                           pin_memory=True,
+                                           drop_last=True,
+                                           num_workers=num_workers,
+                                           collate_fn=test_collate_fn) if d_test else None)
+
     # todo: change this, copied from "wi"
     elif dataset_name == 'wtv2':
         EXPLANATION = "explanation"
