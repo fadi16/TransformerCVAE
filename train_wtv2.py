@@ -14,9 +14,9 @@ from tqdm import tqdm
 import importlib
 import logging
 import copy
-from TransformerCVAE.main_eval import preprocess_predictions_df, evaluate
+from main_eval import preprocess_predictions_df, evaluate
 import pandas as pd
-import TransformerCVAE.data.utils_wtv2 as wt_ut
+from data import utils_wtv2 as wt_ut
 from util import *
 from model import *
 from collections import Counter
@@ -277,7 +277,7 @@ def main():
     args = parser.parse_args('test --batch-sizes 2 --seq-lens 1024 '
                              '--iters-no-cyclic-annealing 4412 --add_input --add_attn --attn_proj_vary '
                              '--learn_prior --lr 3e-4 --fp16 --fp16_opt_level O0 --iterations 13236 --warmup -1 '
-                             '--fix-pretrained-iters 4412 --with-apex --with-retrieval --no-similar-hypotheses 20 --no-facts-to-retrieve 6'.split())  # wi.12.proj_vary_beta_cvae
+                             '--fix-pretrained-iters 4412 --with-retrieval --with-apex --no-similar-hypotheses 20 --no-facts-to-retrieve 6'.split())  # wi.12.proj_vary_beta_cvae
 
     if args.model_type == 'cvae':
         args.learn_prior = True
@@ -380,7 +380,7 @@ def main():
                                                                   make_test=True,
                                                                   with_retrieval=args.with_retrieval,
                                                                   no_hypotheses=args.no_similar_hypotheses,
-                                                                  no_facts=args.no_similar_facts_to_retrieve,
+                                                                  no_facts=args.no_facts_to_retrieve,
                                                                   central_only=args.central_only
                                                                   )
 

@@ -1,7 +1,7 @@
 import json
-from TransformerCVAE.data.retrieve_prompt_generate.bm25 import BM25
-from TransformerCVAE.data.retrieve_prompt_generate.explanatory_power import ExplanatoryPower
-from TransformerCVAE.data.retrieve_prompt_generate.utils import Utils
+from data.retrieve_prompt_generate.bm25 import BM25
+from data.retrieve_prompt_generate.explanatory_power import ExplanatoryPower
+from data.retrieve_prompt_generate.utils import Utils
 
 FACTS_BANK_JSON_PATH = "./data/wordTreev2/tablestore_shared.json"
 TRAINING_DATA_JSON_PATH = "./data/wordTreev2/train_set_shared.json"

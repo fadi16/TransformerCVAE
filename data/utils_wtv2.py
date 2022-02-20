@@ -19,8 +19,7 @@ from bert_serving.client import BertClient
 from tqdm import trange
 from random import shuffle
 import pandas as pd
-
-from TransformerCVAE.data.retrieve_prompt_generate import retrieve
+from data.retrieve_prompt_generate import retrieve
 
 
 def compose(*functions):
