@@ -735,7 +735,7 @@ def main():
 
     no_cycles = 4
     total_no_beta_iters = args.iterations - args.iters_no_cyclic_annealing
-    no_iter_in_cycle = total_no_beta_iters // no_cycles
+    no_iter_in_cycle = math.ceil(total_no_beta_iters / no_cycles)
 
     while num_iters < args.iterations:
         # Run epoch
@@ -758,7 +758,7 @@ def main():
                         beta = 0
                     else:
                         # anneal beta from 0 to 1 for first half of the cycle then fix it at 1
-                        tau = ((num_iters - args.iters_no_cyclic_annealing - 1) % (total_no_beta_iters / no_cycles)) / (total_no_beta_iters / no_cycles)
+                        tau = ((num_iters - args.iters_no_cyclic_annealing - 1) % math.ceil(total_no_beta_iters / no_cycles)) / (total_no_beta_iters / no_cycles)
                         # proportion used to increase beta within a cycle
                         r = 0.5
                         if tau <= r:
