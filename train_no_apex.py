@@ -235,12 +235,13 @@ def main():
     parser.add_argument('--model_type', type=str, default='cvae', choices=['cvae', 'ae_vae_fusion'])
     parser.add_argument('--iterations', type=int, default=300001)#101640 * 4)  # wp 850001  wi 300001 ax 300001 yp 800001
     # wiki plots
-    parser.add_argument('--dataset', type=str, default='wi', choices=['ax', 'yp', 'wp', 'wi'], help="Dataset to use for training")
+    parser.add_argument('--dataset', type=str, default='wi', choices=['ax', 'yp', 'wp', 'wi', 'wi-small'], help="Dataset to use for training")
     parser.add_argument('--warmup', type=int, default=10000,
                         help="Amount of iterations to warmup, then decay. (-1 for no warmup and decay)")
 
-    parser.add_argument('--batch-sizes', nargs='+', type=int, default=[1],
-                        help='batch size per GPU. Lists the schedule.')
+    parser.add_argument("--fix-pretrained-iters", type=int, default=40000,
+                        help="Number of iterations in which to keep pretrained params fixed")
+    parser.add_argument('--batch-sizes', nargs='+', type=int, default=[1], help='batch size per GPU. Lists the schedule.')
     parser.add_argument('--seq-lens', nargs='+', type=int, default=[1024],
                         help='seq length per sample. Lists the schedule.')
     parser.add_argument('--switch-time', type=float, default=0,
@@ -258,7 +259,7 @@ def main():
     parser.add_argument('--fp16_opt_level', default='O0', type=str, required=False)
 
     # KL cost annealing, increase beta from beta_0 to 1 in beta_warmup steps
-    parser.add_argument('--beta_0', default=1.00, type=float)
+    parser.add_argument('--beta_0', default=0.00, type=float)
     parser.add_argument('--beta_warmup', type=int, default=50000)
     # cyc_vae parameters
     parser.add_argument('--cycle', type=int, default=101640)
@@ -270,8 +271,12 @@ def main():
 
     parser.add_argument('--learn_prior', action="store_true")
 
+    parser.add_argument('--generate-every-iters', type=int, default=50000)
+
+
+    parser.add_argument('--save-every-iters', type=int, default=10000)
     args = parser.parse_args('test --batch-sizes 1 --seq-lens 1024 '
-                             '--add_input --learn_prior --fp16'.split()) # wi.12.proj_vary_beta_cvae
+                         '--load out/test --dataset wi-small --add_input --no_gpu --learn_prior --iterations 5 --warmup -1 --fix-pretrained-iters 0 --generate-every-iters 1 --save-every-iters 2000'.split())  # wi.12.proj_vary_beta_cvae
 
     if args.model_type == 'cvae':
         args.learn_prior = True
@@ -309,6 +314,7 @@ def main():
 
     print('Loading models...')
     cache_dir = os.path.join(args.out_dir, 'model_cache')
+    print("cache dir = " + cache_dir)
     os.makedirs(cache_dir, exist_ok=True)
     # Load pre-trained teacher tokenizer (vocabulary)
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir=cache_dir)
@@ -345,7 +351,7 @@ def main():
     print('VAE_params:', num_params(VAE))  # 286694400
     if args.load:
         print('Loading model weights...')
-        state = torch.load(os.path.join(args.load, 'model_latest.pt'))  # , map_location='cpu' model_latest.pt
+        state = torch.load(os.path.join(args.load, 'model_latest.pt'), map_location=device)  # , map_location='cpu' model_latest.pt
         if 'module' in list(state.keys())[0]:  # model_path is data parallel model with attr 'module'
             state_copy = copy.copy(state)
             keys = state_copy.keys()
@@ -356,7 +362,10 @@ def main():
     print('Done.')
 
     # fix pre-trained parameters before certain iterations
-    tuning_all_after_iters = 40000
+    ########################################################
+    # TODO - have a look again, this was 40K
+    ########################################################
+    tuning_all_after_iters = args.fix_pretrained_iters
     tuning_all = False
     for name, parameter in VAE.named_parameters():
         # print((name, parameter.requires_grad))
@@ -402,8 +411,10 @@ def main():
 
     print('Begin training iterations')
     logging.info("Begin training iterations")
-    max_val_batches = 20000  # max num. of val batches
-    logging.info("Total iteration: %d" % args.iterations)
+    #################################################
+    # TODO - this was 20K
+    ################################################
+    max_val_batches = 2000  # max num. of val batches    logging.info("Total iteration: %d" % args.iterations)
     e = 0  # number of epoch
     num_iters = 0
     optimizer.zero_grad()
@@ -516,7 +527,7 @@ def main():
                             label.append(prom[2:4])
                         else:
                             label.append(None)
-                elif args.dataset == 'wi':
+                elif args.dataset == 'wi' or args.dataset == 'wi-small':
                     # 0. TV, play, miniseries, telenovela; 1.film; 2. music; 3. manga, comic, 4. book, novel, story 5. game
                     label = []
                     prompts = [tokenizer.decode(l) for l in x_tokens.tolist()]
@@ -561,7 +572,7 @@ def main():
                 X_emb = X_emb[[l is not None for l in y], :]
                 y = [l for l in y if l is not None]
 
-            if args.dataset == 'wi':
+            if args.dataset == 'wi' or args.dataset == 'wi-small':
                 X_emb = X_emb[[l is not None for l in y], :]
                 y = [l for l in y if l is not None]
 
@@ -736,6 +747,24 @@ def main():
         with tqdm(total=len(train_loader)) as pbar:
             for i, (x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask) in enumerate(train_loader):
 
+                no_cycles = 4
+                total_no_iter = args.iterations
+                no_iter_in_cycle = total_no_iter // no_cycles
+                # new cycle beta is zero
+                if num_iters % no_iter_in_cycle == 0:
+                    logging.info('KL annealing restart')
+                    beta = 0
+                else:
+                    # anneal beta from 0 to 1 for first half of the cycle then fix it at 1
+                    tau = ((num_iters - 1) % (total_no_iter / no_cycles)) / (total_no_iter / no_cycles)
+                    # proportion used to increase beta within a cycle
+                    r = 0.5
+                    if tau <= r:
+                        beta = min(1, beta + (1 / r) * (1 / (total_no_iter / no_cycles)))
+                    else:
+                        beta = 1
+                    logging.info("beta = {0}".format(beta))
+
                 # if num_iters % args.cycle >= args.cycle - args.beta_warmup:
                 #     beta = min(1.0, beta + (1. - args.beta_0) / args.beta_warmup)
 
@@ -774,16 +803,16 @@ def main():
                 num_iters += 1
                 pbar.update(1)
 
-                if num_iters % args.cycle == 0:
-                    beta = args.beta_0
-                    logging.info('KL annealing restart')
+                # if num_iters % args.cycle == 0:
+                #     beta = args.beta_0
+                #     logging.info('KL annealing restart')
 
-                if num_iters % 10000 == 0:
+                if num_iters % args.generate_every_iters == 0:
                     test_plot(test_loader, num_iters)
                     val_step(val_loader)
                     generate(test_loader, num_iters)
 
-                if num_iters % 50000 == 0:
+                if num_iters % args.save_every_iters == 0:
                     print('Saving model...')
                     logging.info("Iteration completed: %d, remained %d" % (num_iters, args.iterations - num_iters))
                     logging.info("Saving model...")

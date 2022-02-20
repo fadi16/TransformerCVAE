@@ -14,28 +14,27 @@ from tqdm import tqdm
 import importlib
 import logging
 import copy
-from data.util import *
+from TransformerCVAE.main_eval import preprocess_predictions_df, evaluate
+import pandas as pd
+import TransformerCVAE.data.utils_wtv2 as wt_ut
 from util import *
-from apex.optimizers import FusedAdam
-from apex import amp
-from apex.fp16_utils import FP16_Optimizer
 from model import *
-
 from collections import Counter
 from nltk.translate.bleu_score import sentence_bleu
 from nltk.translate.bleu_score import SmoothingFunction
 from rouge import Rouge
-
 from sklearn.manifold import TSNE
 import matplotlib
 
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
+
 devices = '0'
 os.environ["CUDA_VISIBLE_DEVICES"] = devices
 
 
+# TODO: target tokens and y tokens seem to be the same?
 def compute_loss(device, model, x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask, loss_fn, beta):
     input_tokens = input_tokens.to(device)
     target_tokens = target_tokens.to(device)
@@ -95,28 +94,36 @@ def compute_loss_ae(device, model, x_mask, x_tokens, y_mask, y_tokens, input_tok
 
 
 def train_step(device, model, optimizer, x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask, loss_fn,
-               beta, model_type):
+               beta, model_type, with_apex):
+    if with_apex:
+        from apex import amp
+
     output = []
     if model_type == 'ae_vae_fusion':
         optimizer.zero_grad()
         loss, ce_loss, kl_loss = compute_loss_ae(device, model, x_mask, x_tokens, y_mask, y_tokens, input_tokens,
                                                  target_tokens, mask, loss_fn, beta)
-        with amp.scale_loss(loss, optimizer) as scaled_loss:
-            scaled_loss.backward()
-            torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), 5.0)  # max_grad_norm=1.0
-        # loss.backward()
-        # torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)  # max_grad_norm=1.0
+        if with_apex:
+            with amp.scale_loss(loss, optimizer) as scaled_loss:
+                scaled_loss.backward()
+                torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), 5.0)  # max_grad_norm=1.0
+        else:
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # max_grad_norm=1.0
+
         optimizer.step()
         output.append((loss.item(), ce_loss.mean().item(), kl_loss.item()))
 
     optimizer.zero_grad()
     loss, ce_loss, kl_loss = compute_loss(device, model, x_mask, x_tokens, y_mask, y_tokens, input_tokens,
                                           target_tokens, mask, loss_fn, beta)
-    with amp.scale_loss(loss, optimizer) as scaled_loss:
-        scaled_loss.backward()
-        torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), 5.0)  # max_grad_norm=1.0
-    # loss.backward()
-    # torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)  # max_grad_norm=1.0
+    if with_apex:
+        with amp.scale_loss(loss, optimizer) as scaled_loss:
+            scaled_loss.backward()
+            torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), 5.0)  # max_grad_norm=1.0
+    else:
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # max_grad_norm=1.0
     optimizer.step()
     output.append((loss.item(), ce_loss.mean().item(), kl_loss.item()))
 
@@ -220,18 +227,13 @@ def main():
     parser.add_argument('--lr', type=float, default=5e-5)
     parser.add_argument("--seed", type=int, default=0)
 
-    parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
     parser.add_argument('--model_type', type=str, default='cvae', choices=['cvae', 'ae_vae_fusion'])
-    # todo: really
-    parser.add_argument('--iterations', type=int,
-                        default=7000)  # 101640 * 4)  # wp 850001  wi 300001 ax 300001 yp 800001
-    # WordTreev2
-    parser.add_argument('--dataset', type=str, default='wtv2', choices=['wtv2'],
-                        help="Dataset to use for training")
-    # todo: really
-    parser.add_argument('--warmup', type=int, default=1500,
+    parser.add_argument('--iterations', type=int, default=300001)  # 101640 * 4)  # wp 850001  wi 300001 ax 300001 yp 800001
+
+    parser.add_argument('--warmup', type=int, default=10000,
                         help="Amount of iterations to warmup, then decay. (-1 for no warmup and decay)")
-    # todo: need to chnage? tried to change this to 2 and it stopped working on laptop
+    parser.add_argument("--fix-pretrained-iters", type=int, default=40000,
+                        help="Number of iterations in which to keep pretrained params fixed")
     parser.add_argument('--batch-sizes', nargs='+', type=int, default=[1],
                         help='batch size per GPU. Lists the schedule.')
     parser.add_argument('--seq-lens', nargs='+', type=int, default=[1024],
@@ -250,13 +252,13 @@ def main():
     parser.add_argument('--fp16', action='store_true', help="Train using FP16?")
     parser.add_argument('--fp16_opt_level', default='O0', type=str, required=False)
 
-    # todo: why is this not implemented?
     # KL cost annealing, increase beta from beta_0 to 1 in beta_warmup steps
+    # todo: these are hard coded in the code
     parser.add_argument('--beta_0', default=1.00, type=float)
-    parser.add_argument('--beta_warmup', type=int, default=50000)
+    parser.add_argument('--iters-no-cyclic-annealing', type=int,
+                        help="Number of iterations in the beginning where beta is 1")
     # cyc_vae parameters
-    # todo: what is this
-    parser.add_argument('--cycle', type=int, default=101640)
+    parser.add_argument('--no-cycles', type=int, default=4)
 
     parser.add_argument('--add_input', action="store_true")
     parser.add_argument('--add_attn', action="store_true")
@@ -265,8 +267,17 @@ def main():
 
     parser.add_argument('--learn_prior', action="store_true")
 
-    args = parser.parse_args('test --batch-sizes 1 --seq-lens 1024 '
-                             '--add_input --learn_prior --fp16'.split())  # wi.12.proj_vary_beta_cvae
+    parser.add_argument('--no-similar-hypotheses', type=int, default=20)
+    parser.add_argument('--with-retrieval', action="store_true")
+    parser.add_argument('--no-facts-to-retrieve', type=int, default=6)
+    parser.add_argument('--central-only', action="store_true")
+
+    parser.add_argument('--with-apex', action="store_true")
+
+    args = parser.parse_args('test --batch-sizes 2 --seq-lens 1024 '
+                             '--iters-no-cyclic-annealing 4412 --add_input --add_attn --attn_proj_vary '
+                             '--learn_prior --lr 3e-4 --fp16 --fp16_opt_level O0 --iterations 13236 --warmup -1 '
+                             '--fix-pretrained-iters 4412 --with-apex'.split())  # wi.12.proj_vary_beta_cvae
 
     if args.model_type == 'cvae':
         args.learn_prior = True
@@ -286,7 +297,7 @@ def main():
 
     # randomness
     np.random.seed(args.seed)
-    prng = np.random.RandomState()
+    np.random.RandomState()
     torch.random.manual_seed(args.seed)
     if gpu: torch.cuda.manual_seed(args.seed); torch.cuda.manual_seed_all(args.seed)
 
@@ -313,7 +324,6 @@ def main():
     print('gpt2_params:', num_params(gpt2_model))  # gpt2: 124439808
     config = GPT2Config()
 
-
     VAE = VAEModel(config, add_input=args.add_input, add_attn=args.add_attn, add_softmax=args.add_softmax,
                    attn_proj_vary=args.attn_proj_vary, learn_prior=args.learn_prior)
     init_para_frompretrained(VAE.transformer, gpt2_model.transformer, share_para=True)
@@ -338,15 +348,13 @@ def main():
     print('Done.')
 
     # fix pre-trained parameters before certain iterations
-    # todo: isn't this too much for WTv2?
-    # todo: really
-    tuning_all_after_iters = 600
+    tuning_all_after_iters = args.fix_pretrained_iters
     tuning_all = False
     for name, parameter in VAE.named_parameters():
         # print((name, parameter.requires_grad))
         new_pars = ['c_z', 'attention_weights', 'mean', 'logvar', 'input_proj', 'attn_proj', 'Nu_fc1', 'Nu_fc2',
                     'lm_head_rep']
-
+        # if param is not in the list of new_param it's a pretrained param and must be fixed initially
         if not any([True if n in name else False for n in new_pars]):
             parameter.requires_grad = False
 
@@ -357,19 +365,26 @@ def main():
     assert len(batch_schedule) <= 2, 'Currently not supporting multiple schedule'
     cur_b_schedule = len(batch_schedule) - 1 if args.switch_time == 0 else 0
     print('Batch schedule', batch_schedule)
-    train_loader, val_loader, test_loader = prepare_dataset(
-        args.data_dir, args.dataset, tokenizer,
-        batch_schedule[cur_b_schedule][0], batch_schedule[cur_b_schedule][1],
-        batch_schedule[-1][0], batch_schedule[-1][1],
-        batch_schedule[-1][0], batch_schedule[-1][1],
-        make_test=True,
-        num_workers=args.workers, data_type=args.data_type
-    )
-    print('Done.')
 
-    ###
-    val_loader = test_loader
-    ###
+    train_loader, val_loader, test_loader = wt_ut.prepare_dataset(data_dir=args.data_dir,
+                                                                  tokenizer=tokenizer,
+                                                                  train_bsz=batch_schedule[cur_b_schedule][0],
+                                                                  train_seq_len=batch_schedule[cur_b_schedule][1],
+                                                                  val_bsz=batch_schedule[-1][0],
+                                                                  val_seq_len=batch_schedule[-1][1],
+                                                                  test_bsz=batch_schedule[-1][0],
+                                                                  test_seq_len=batch_schedule[-1][1],
+                                                                  num_workers=1,
+                                                                  make_train=True,
+                                                                  make_val=True,
+                                                                  make_test=True,
+                                                                  with_retrieval=args.with_retrieval,
+                                                                  no_hypotheses=args.no_similar_hypotheses,
+                                                                  no_facts=args.no_similar_facts_to_retrieve,
+                                                                  central_only=args.central_only
+                                                                  )
+
+    print('Done.')
 
     print('Wrapping models and optimizers...')
     # Apply linear scaling rule to increase batch size for short sequence training.
@@ -380,14 +395,17 @@ def main():
 
     optimizer = AdamW(VAE.parameters(), lr=args.lr, correct_bias=True)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_schedule)
-    VAE, optimizer = amp.initialize(VAE, optimizer, opt_level=args.fp16_opt_level)
+
+    if args.with_apex:
+        from apex import amp
+        VAE, optimizer = amp.initialize(VAE, optimizer, opt_level=args.fp16_opt_level)
 
     loss_fn = nn.CrossEntropyLoss(reduction='none')
     print('Done.')
 
     print('Begin training iterations')
     logging.info("Begin training iterations")
-    max_val_batches = 20000  # max num. of val batches
+    max_val_batches = 2000  # max num. of val batches
     logging.info("Total iteration: %d" % args.iterations)
     e = 0  # number of epoch
     num_iters = 0
@@ -406,9 +424,9 @@ def main():
         logging.info("Validation loop.         Batches: %d" % len(val_loader))
         logging.info("Validation loop. max_val_batches: %d" % max_val_batches)
 
-        # val_iter = iter(val_loader); x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask = next(val_iter)
         with tqdm(total=min(len(val_loader), max_val_batches)) as pbar:
-            for i, (x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask) in enumerate(val_loader):
+            for i, (x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask, topic) in enumerate(
+                    val_loader):
                 with torch.no_grad():
                     if args.model_type == 'cvae':
                         loss, ce_loss, kl_loss = compute_loss(device, VAE, x_mask, x_tokens, y_mask, y_tokens,
@@ -423,7 +441,6 @@ def main():
 
                 text = target_tokens[0, :].tolist()
                 logprob = ce_loss.tolist()
-                # todo this fails when batch sizes != 1, why?????
                 assert len(text) == len(logprob)
 
                 # only for story
@@ -471,20 +488,17 @@ def main():
 
         VAE.train()
 
-    def test_plot(test_loader, num_iters):
+    def test_plot(val_loader, epoch):
         VAE.eval()
 
         # get embedding
         X_emb = None
         y = None
 
-        # todo: think on how you can cluster explanations/questions together
-        # test_iter = iter(test_loader); x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask = next(test_iter)
-        with tqdm(total=len(test_loader)) as pbar:
-            for i, (x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask) in enumerate(
-                    test_loader):
-                y_mask = y_mask.to(device)
-                y_tokens = y_tokens.to(device)
+        with tqdm(total=len(val_loader)) as pbar:
+            for i, (x_mask, x_tokens, _, _, _, _, _, topic) in enumerate(
+                    val_loader):
+
                 x_mask = x_mask.to(device)
                 x_tokens = x_tokens.to(device)
                 with torch.no_grad():
@@ -493,68 +507,24 @@ def main():
                     else:
                         latent_mean, latent_logvar = VAE.encoder(input_ids=x_tokens, attention_mask=x_mask)[:2]
 
-                if args.dataset == 'ax' or args.dataset == 'yp':
-                    label = [tokenizer.decode(l)[:2] for l in x_tokens.tolist()]
-                elif args.dataset == 'wp':
-                    label = []
-                    prompts = [tokenizer.decode(l)[:6].lower() for l in x_tokens.tolist()]
-                    for prom in prompts:
-                        if prom[0] in ['[', '('] and prom[5] in [']', ')']:
-                            label.append(prom[2:4])
-                        else:
-                            label.append(None)
-                elif args.dataset == 'wi':
-                    # 0. TV, play, miniseries, telenovela; 1.film; 2. music; 3. manga, comic, 4. book, novel, story 5. game
-                    label = []
-                    prompts = [tokenizer.decode(l) for l in x_tokens.tolist()]
-                    for prom in prompts:
-                        if 'TV' in prom or 'play' in prom or 'miniseries' in prom or 'telenovela' in prom:
-                            label.append(0)
-                        elif 'film' in prom:
-                            label.append(1)
-                        elif 'music' in prom:
-                            label.append(2)
-                        elif 'manga' in prom or 'comic' in prom:
-                            label.append(3)
-                        elif 'book' in prom or 'novel' in prom or 'story' in prom:
-                            label.append(4)
-                        elif 'game' in prom:
-                            label.append(5)
-                        else:
-                            label.append(None)
-                else:
-                    raise Exception
-
                 if i == 0:
                     X_emb = latent_mean.data
-                    y = label
+                    y = topic
                 else:
                     X_emb = torch.cat((X_emb, latent_mean.data), dim=0)
-                    y.extend(label)
+                    y.extend(topic)
                 pbar.update(1)
         X_emb = X_emb.cpu().numpy()
 
         try:
-            if args.dataset == 'yp':
-                y = ['0' if l in ['0', '1'] else l for l in y]
-                y = ['4' if l in ['3', '4'] else l for l in y]
-                X_emb = X_emb[[l != '2' for l in y], :]
-                y = [l for l in y if l != '2']
-
-            if args.dataset == 'wp':
-                topics = [['wp', 'sp', 'tt'], ['eu'], ['cw'], ['pm'], ['mp', 'ip'], ['pi', 'cc'], ['ot'], ['rf']]
-                match = [[True if l in t else False for t in topics] for l in y]
-                y = [m.index(True) if True in m else None for m in match]
-                X_emb = X_emb[[l is not None for l in y], :]
-                y = [l for l in y if l is not None]
-
-            if args.dataset == 'wi':
-                X_emb = X_emb[[l is not None for l in y], :]
-                y = [l for l in y if l is not None]
+            X_emb = X_emb[[t.lower() != "none" for t in y], :]
+            y = [t for t in y if t.lower() != "none"]
 
             # to 2D
-            # X_emb_2d = TSNE(n_components=2, init='pca', verbose=1).fit_transform(X_emb)
-            X_emb_2d = TSNE(n_components=2, verbose=1, perplexity=40).fit_transform(X_emb)
+            #  The perplexity is related to the number of nearest neighbors that is used in other manifold learning algorithms.
+            #  Larger datasets usually require a larger perplexity.
+            #  Consider selecting a value between 5 and 50. Different values can result in significantly different results.
+            X_emb_2d = TSNE(n_components=2, verbose=1, perplexity=15).fit_transform(X_emb)
 
             def remove_outliers(data, r=2.0):
                 outliers_data = abs(data - np.mean(data, axis=0)) >= r * np.std(data, axis=0)
@@ -574,14 +544,16 @@ def main():
                 idx = [yl == l for yl in y]
                 plt.scatter(X_emb_2d[idx, 0], X_emb_2d[idx, 1], c=cc[i], s=10, edgecolor='none', alpha=0.5)
             ax.axis('off')  # adding it will get no axis
-            plt.savefig(os.path.join(save_folder, 'tSNE_' + '{:07d}'.format(num_iters) + '.png'))
+            plt.savefig(os.path.join(save_folder, 'tSNE_' + '{0}'.format(epoch) + '.png'))
             plt.close(fig)
         except:
+            logging.info("Exception in t-SNE")
+            print("Exception in t-SNE")
             pass
 
         VAE.train()
 
-    def generate(test_loader, num_iters):
+    def generate(val_loader, num_iters, generate_all=False, training_epoch=-1):
         VAE.eval()
 
         n_samples = 0
@@ -596,14 +568,16 @@ def main():
         model_type = args.model_type
 
         # write samples to file
-        samples_file = open(os.path.join(save_folder, 'generate-' + '%07d' % num_iters + '.txt'), 'w', encoding='utf8')
+        samples_file = open(os.path.join(save_folder, 'generate-' + str(training_epoch) + '.txt'), 'w', encoding='utf8')
 
-        # test_iter = iter(test_loader); x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask = next(test_iter)
-        with tqdm(total=len(test_loader)) as pbar:
-            for i_test, (x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask) in enumerate(
-                    test_loader):
+        questions = []
+        generated_text = []
+        actual_text = []
+        with tqdm(total=len(val_loader)) as pbar:
+            for i_test, (x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask, topic) in enumerate(
+                    val_loader):
 
-                if i_test >= 10: break
+                if i_test >= 10 and not generate_all: break
 
                 length = -1
                 if length == -1:
@@ -619,7 +593,6 @@ def main():
                               storys]
 
                 for _ in range(args.nsamples // args.batch_size):
-                    # model, batch_size, temperature, top_k, top_p, eos_token, sample = VAE, args.batch_size, args.temperature, args.top_k, args.top_p, tokenizer.encoder['<|endoftext|>'], True
                     out, _ = sample_sequence(
                         model=VAE,
                         tokenizer=tokenizer,
@@ -678,20 +651,43 @@ def main():
                     samples_file.write("=" * 50 + " SAMPLE " + str(i_test) + " " + "=" * 50)
                     samples_file.write('\n' * 2)
 
-                    samples_file.write("=" * 40 + " Outlines  " + "=" * 40)
+                    samples_file.write("=" * 40 + " Question  " + "=" * 40)
                     samples_file.write('\n' * 2)
-                    samples_file.write(tokenizer.decode(x_tokens[i, :][x_mask[i, :] == 1].tolist()))
+                    question = tokenizer.decode(x_tokens[i, :][x_mask[i, :] == 1].tolist())
+                    samples_file.write(question)
+                    questions.append(question)
+
                     samples_file.write('\n' * 2)
-                    samples_file.write("=" * 40 + " Story " + "=" * 40)
+                    samples_file.write("=" * 40 + " Actual Explanation " + "=" * 40)
                     samples_file.write('\n' * 2)
                     samples_file.write(storys_str[i])
+                    actual_text.append(storys_str[i])
                     samples_file.write('\n' * 2)
 
-                    samples_file.write("=" * 40 + " Generated " + "=" * 40)
+                    samples_file.write("=" * 40 + " Generated Explanation " + "=" * 40)
                     samples_file.write('\n' * 2)
                     samples_file.write(eff_samples[i][0])
+                    generated_text.append(eff_samples[i][0])
                     samples_file.write('\n' * 4)
                     samples_file.flush()
+
+        if generate_all:
+            predictions_and_actuals_df = pd.DataFrame({
+                "Questions": questions,
+                "Generated Text": generated_text,
+                "Actual Text": actual_text
+            })
+
+            _, _, reference_text, _, _, _, generated_text_with_no_exact_repetitions, _, _, _ = preprocess_predictions_df(
+                df=predictions_and_actuals_df)
+            _, eval_score, _, _ = evaluate(metric_key="bleurt",
+                                           generated=generated_text_with_no_exact_repetitions,
+                                           references=reference_text,
+                                           questions=questions,
+                                           best_and_worst=False)
+            v_writer.add_scalar("Validation - bleurt score", eval_score, training_epoch)
+
+            predictions_and_actuals_df.to_csv(os.path.join("actual_vs_generated_{0}.csv".format(training_epoch)))
 
         print('Test complete with %05d samples.' % n_samples)
         logging.info("Test complete with %05d samples.", n_samples)
@@ -705,13 +701,16 @@ def main():
         logging.info(' rouge : %s', str(rouge_scores_values))
 
         VAE.train()
+        return eval_score
 
-    # todo no plotting for word tree for now
-    #test_plot(test_loader, num_iters)
+    test_plot(val_loader, e)
     val_step(val_loader)
-    generate(test_loader, num_iters)
+    generate(val_loader, num_iters)
     torch.save(VAE.state_dict(), os.path.join(save_folder, 'model_' + '{:07d}'.format(num_iters) + '.pt'))
+    gpt2_model.save_pretrained(save_folder)
+    tokenizer.save_pretrained(save_folder)
 
+    best_bleurt_score = -1
     while num_iters < args.iterations:
         # Run epoch
         st = time.time()
@@ -722,19 +721,37 @@ def main():
         logging.info("Training loop.       Batches: %d" % len(train_loader))
 
         with tqdm(total=len(train_loader)) as pbar:
-            for i, (x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask) in enumerate(train_loader):
+            for i, (x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask, topic) in enumerate(
+                    train_loader):
+                if num_iters < args.iters_no_cyclic_annealing:
+                    beta = 1
+                else:
+                    no_cycles = 4
+                    total_no_iter = args.iterations
+                    no_iter_in_cycle = total_no_iter // no_cycles
+                    # new cycle beta is zero
+                    if num_iters % no_iter_in_cycle == 0:
+                        logging.info('KL annealing restart')
+                        beta = 0
+                    else:
+                        # anneal beta from 0 to 1 for first half of the cycle then fix it at 1
+                        tau = ((num_iters - 1) % (total_no_iter / no_cycles)) / (total_no_iter / no_cycles)
+                        # proportion used to increase beta within a cycle
+                        r = 0.5
+                        if tau <= r:
+                            beta = min(1, beta + (1 / r) * (1 / (total_no_iter / no_cycles)))
+                        else:
+                            beta = 1
 
-                # if num_iters % args.cycle >= args.cycle - args.beta_warmup:
-                #     beta = min(1.0, beta + (1. - args.beta_0) / args.beta_warmup)
+                logging.info("beta = {0}".format(beta))
 
                 if not tuning_all and num_iters >= tuning_all_after_iters:
                     for name, parameter in VAE.named_parameters():
-                        # print((name, parameter.requires_grad))
                         parameter.requires_grad = True
                     tuning_all = True
 
                 output = train_step(device, VAE, optimizer, x_mask, x_tokens, y_mask, y_tokens,
-                                    input_tokens, target_tokens, mask, loss_fn, beta, args.model_type)
+                                    input_tokens, target_tokens, mask, loss_fn, beta, args.model_type, args.with_apex)
                 loss, ce_loss, kl_loss = output[-1]
 
                 lr = scheduler.get_last_lr()[0]
@@ -762,40 +779,41 @@ def main():
                 num_iters += 1
                 pbar.update(1)
 
-                if num_iters % args.cycle == 0:
-                    beta = args.beta_0
-                    logging.info('KL annealing restart')
-
-                if num_iters % 200 == 0:
-                    #test_plot(test_loader, num_iters)
-                    val_step(val_loader)
-                    generate(test_loader, num_iters)
-
-                if num_iters % 1100 == 0:
-                    print('Saving model...')
-                    logging.info("Iteration completed: %d, remained %d" % (num_iters, args.iterations - num_iters))
-                    logging.info("Saving model...")
-                    logging.info('\n------------------------------------------------------')
-                    torch.save(VAE.state_dict(),
-                               os.path.join(save_folder, 'model_' + '{:07d}'.format(num_iters) + '.pt'))
-
-                if args.switch_time > 0 and num_iters == int(args.iterations * args.switch_time):
-                    print('Switch to long sequence training')
-                    logging.info("Switch to long sequence training")
-                    cur_b_schedule += 1
-                    train_loader, val_loader, test_loader = prepare_dataset(
-                        args.data_dir, args.dataset, tokenizer,
-                        batch_schedule[cur_b_schedule][0], batch_schedule[cur_b_schedule][1],
-                        batch_schedule[-1][0], batch_schedule[-1][1],
-                        batch_schedule[-1][0], batch_schedule[-1][1],
-                        make_test=True,
-                        num_workers=args.workers, data_type=args.data_type
-                    )
+                # # todo: what's this?
+                # if args.switch_time > 0 and num_iters == int(args.iterations * args.switch_time):
+                #     print('Switch to long sequence training')
+                #     logging.info("Switch to long sequence training")
+                #     cur_b_schedule += 1
+                #     train_loader, val_loader, test_loader = prepare_dataset(
+                #         args.data_dir, args.dataset, tokenizer,
+                #         batch_schedule[cur_b_schedule][0], batch_schedule[cur_b_schedule][1],
+                #         batch_schedule[-1][0], batch_schedule[-1][1],
+                #         batch_schedule[-1][0], batch_schedule[-1][1],
+                #         make_test=True,
+                #         num_workers=args.workers, data_type=args.data_type
+                #     )
         if not end:
+            test_plot(val_loader, e)
+            val_step(val_loader)
+            current_bleurt_score = generate(val_loader, num_iters, generate_all=True, training_epoch=e)
+            if current_bleurt_score > best_bleurt_score:
+                best_bleurt_score = current_bleurt_score
+                logging.info("best bleurt score is: {0}, and is from epoch: {1}".format(best_bleurt_score, e))
+
+            print('Saving model...')
+            logging.info("Iteration completed: %d, remained %d" % (num_iters, args.iterations - num_iters))
+            logging.info("Saving model...")
+            logging.info('\n------------------------------------------------------')
+            torch.save(VAE.state_dict(),
+                       os.path.join(save_folder, 'model_' + '{0}'.format(e) + '.pt'))
+            gpt2_model.save_pretrained(save_folder)
+            tokenizer.save_pretrained(save_folder)
             e += 1
             logging.info("Training loop. The ith epoch completed: %d" % e)
 
     torch.save(VAE.state_dict(), os.path.join(save_folder, 'model_latest.pt'))
+    gpt2_model.save_pretrained(save_folder)
+    tokenizer.save_pretrained(save_folder)
     print('Training complete.')
     logging.info("Training complete.")
 

@@ -19,13 +19,12 @@ class WordTreev2Dataset(torch.utils.data.Dataset):
         if self.sort:
             return self.data[i]
         else:
-            question_answer_feature, explanation = self.texts[i]
+            question_answer_feature, explanation, topic = self.texts[i]
 
             question_answer_feature = question_answer_feature.strip()
             explanation = explanation.strip()
-            # todo: how to change it back
-            #text_raw_dict = {'question_answer_feature': question_answer_feature, 'explanation': explanation}
-            text_raw_dict = {'title': question_answer_feature, 'story': explanation}
+            topic = topic.strip()
+            text_raw_dict = {'question_and_answer': question_answer_feature, 'explanation': explanation, 'major_question_topic': topic}
 
             text = self.preprocess(text_raw_dict)
             return text

@@ -18,7 +18,6 @@ import copy
 from apex.optimizers import FusedAdam
 from apex import amp
 from apex.fp16_utils import FP16_Optimizer
-from google.colab import files
 
 from data.util import *
 from util import *
@@ -48,8 +47,7 @@ def compute_loss(device, model, x_mask, x_tokens, y_mask, y_tokens, input_tokens
     y_mask = y_mask.to(device)
     y_tokens = y_tokens.to(device)
 
-    outputs = model(input_ids=input_tokens, attention_mask=mask, x_mask=x_mask, x_tokens=x_tokens, y_mask=y_mask,
-                    y_tokens=y_tokens)
+    outputs = model(input_ids=input_tokens, attention_mask=mask, x_mask=x_mask, x_tokens=x_tokens, y_mask=y_mask, y_tokens=y_tokens)
     logits = outputs[0]
     kl_loss = outputs[-1]
     num_logits = logits.size(-1)
@@ -241,7 +239,7 @@ def main():
     parser.add_argument('--model_type', type=str, default='cvae', choices=['cvae', 'ae_vae_fusion'])
     parser.add_argument('--iterations', type=int, default=300001)#101640 * 4)  # wp 850001  wi 300001 ax 300001 yp 800001
     # wiki plots
-    parser.add_argument('--dataset', type=str, default='wi', choices=['ax', 'yp', 'wp', 'wi', 'wi-small'], help="Dataset to use for training")
+    parser.add_argument('--dataset', type=str, default='wi', choices=['ax', 'yp', 'wp', 'wi', 'wi-small', 'wtv2'], help="Dataset to use for training")
     parser.add_argument('--warmup', type=int, default=10000,
                         help="Amount of iterations to warmup, then decay. (-1 for no warmup and decay)")
     parser.add_argument("--fix-pretrained-iters", type=int, default=40000, help="Number of iterations in which to keep pretrained params fixed")
@@ -282,7 +280,7 @@ def main():
 
 
     args = parser.parse_args('test --batch-sizes 1 --seq-lens 1024 '
-                             '--dataset wi-small --add_input --learn_prior --fp16 --fp16_opt_level O1 --iterations 20000 --warmup 2000 --fix-pretrained-iters 4000 --generate-every-iters 1000 --save-every-iters 2000'.split()) # wi.12.proj_vary_beta_cvae
+                             '--dataset wtv2 --add_input --learn_prior --fp16 --fp16_opt_level O0 --iterations 10000 --warmup 1000 --fix-pretrained-iters 2000 --generate-every-iters 1000 --save-every-iters 2000'.split()) # wi.12.proj_vary_beta_cvae
 
     if args.model_type == 'cvae':
         args.learn_prior = True
@@ -328,19 +326,6 @@ def main():
     gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2', cache_dir=cache_dir)
     print('gpt2_params:', num_params(gpt2_model))  # gpt2: 124439808
     config = GPT2Config()
-
-    # add special tokens
-    # special_tokens_dict = {
-    #     'pad_token': '<|startoftext|>',
-    #     'cls_token': '<|startofcond|>',
-    #     'sep_token': '<|sepofcond|>',
-    #     'mask_token': '<|endofcond|>'
-    # }
-    # num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
-    # print('We have added', num_added_toks, 'special tokens')
-    # # Notice: resize_token_embeddings expect to receive the full size of the new vocab
-    # gpt2_model.resize_token_embeddings(len(tokenizer))
-    # assert tokenizer.pad_token == '<|startoftext|>'
 
     VAE = VAEModel(config, add_input=args.add_input, add_attn=args.add_attn, add_softmax=args.add_softmax,
                    attn_proj_vary=args.attn_proj_vary, learn_prior=args.learn_prior)
@@ -759,7 +744,7 @@ def main():
         # train_iter = iter(train_loader); x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask = next(train_iter)
         with tqdm(total=len(train_loader)) as pbar:
             for i, (x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask) in enumerate(train_loader):
-
+                # todo: not exactly like either paper
                 no_cycles = 4
                 total_no_iter = args.iterations
                 no_iter_in_cycle = total_no_iter // no_cycles
@@ -777,7 +762,7 @@ def main():
                     else:
                         beta = 1
 
-                    logging.info("beta = {0}".format(beta))
+                logging.info("beta = {0}".format(beta))
 
                 # if num_iters % args.cycle >= args.cycle - args.beta_warmup:
                 #     beta = min(1.0, beta + (1. - args.beta_0) / args.beta_warmup)

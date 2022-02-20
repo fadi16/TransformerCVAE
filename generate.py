@@ -143,10 +143,10 @@ def run_model():
 
     parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
     parser.add_argument('--model_type', type=str, default='cvae', choices=['cvae', 'ae_vae_fusion'])
-    parser.add_argument('--dataset', type=str, default='wi', choices=['wp', 'wi'], help="Dataset to use for training")
+    parser.add_argument('--dataset', type=str, default='wi', choices=['wp', 'wi', 'wi-small', 'wtv2'], help="Dataset to use for training")
 
     # use GPU
-    parser.add_argument('--gpu', default=2, type=int)
+    parser.add_argument('--gpu', default=0, type=int)
     parser.add_argument('--no_gpu', action="store_true")
 
     parser.add_argument('--add_input', action="store_true")
@@ -156,8 +156,8 @@ def run_model():
 
     parser.add_argument('--learn_prior', action="store_true")
 
-    args = parser.parse_args('--model-path out/wi.1.proj_vary_cyc_cvae/model_0030000.pt '
-                             '--add_input --learn_prior '.split())
+    args = parser.parse_args('--model-path out/test/model_0024000.pt '
+                             '--add_input --learn_prior --dataset wtv2 --out-dir out'.split())
     print(args)
 
     if args.model_type == 'cvae':
@@ -193,9 +193,9 @@ def run_model():
     cache_dir = os.path.join(args.out_dir, 'model_cache')
     os.makedirs(cache_dir, exist_ok=True)
     # Load pre-trained teacher tokenizer (vocabulary)
-    tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir=cache_dir)
+    tokenizer = GPT2Tokenizer.from_pretrained(pretrained_model_name_or_path="out/test")#'gpt2', cache_dir=cache_dir)
     tokenizer.max_len = int(1e12)
-    gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2', cache_dir=cache_dir)
+    gpt2_model = GPT2LMHeadModel.from_pretrained(pretrained_model_name_or_path="out/test")#'gpt2', cache_dir=cache_dir)
     print('gpt2_params:', num_params(gpt2_model))  # gpt2: 124439808
     config = GPT2Config()
 
@@ -214,6 +214,10 @@ def run_model():
 
     VAE = VAEModel(config, add_input=args.add_input, add_attn=args.add_attn, add_softmax=args.add_softmax,
                    attn_proj_vary=args.attn_proj_vary, learn_prior=args.learn_prior)
+
+
+    print("TOTAL NO PARAMS = ", sum([np.prod(p.size()) for p in VAE.parameters()]))
+
     init_para_frompretrained(VAE.transformer, gpt2_model.transformer, share_para=True)
     init_para_frompretrained(VAE.encoder, gpt2_model.transformer, share_para=False)
     if args.learn_prior:
@@ -222,12 +226,13 @@ def run_model():
     VAE.lm_head.weight = gpt2_model.lm_head.weight
     if VAE.add_softmax:
         VAE.lm_head_rep = Conv1D(*gpt2_model.lm_head.weight.size())
-        # VAE.lm_head_rep = LM_head_rep(*gpt2_model.lm_head.weight.size()[::-1])
+        VAE.lm_head_rep = LM_head_rep(*gpt2_model.lm_head.weight.size()[::-1])
     print('VAE_params:', num_params(VAE))  # 286694400
     args.load = args.model_path
     if args.load:
         print('Loading model weights...')
         state = torch.load(os.path.join(args.load), map_location='cpu')
+        #print(state)
         if 'module' in list(state.keys())[0]:  # model_path is data parallel model with attr 'module'
             state_copy = copy.copy(state)
             keys = state_copy.keys()
@@ -254,8 +259,6 @@ def run_model():
     logging.info("Testing loop. batches: %d" % len(test_loader))
 
     endoftext = tokenizer.convert_tokens_to_ids("<|endoftext|>")
-    startofcond = tokenizer.convert_tokens_to_ids("<|startofcond|>")
-    endofcond = tokenizer.convert_tokens_to_ids("<|endofcond|>")
 
     n_samples = 0
     bleu4_sum = 0.0
@@ -277,6 +280,7 @@ def run_model():
             # these are the golden references
             n, l = target_tokens.size()
             storys = [tokenizer.decode(target_tokens[i, :]) for i in range(n)]
+            storys = [s[s.find("<|endoftext|>") + len("<|endoftext|>"):] for s in storys]
             storys_str = [s[:s.find("<|endoftext|>") + len("<|endoftext|>")] if "<|endoftext|>" in s else s for s in storys]
 
             for _ in range(args.nsamples // args.batch_size):

@@ -17,6 +17,7 @@ def init_para_frompretrained(m, pm, share_para=False):
     m.wte.weight = pm.wte.weight
     m.wpe.weight = pm.wpe.weight
 
+    # FA: number of h(s) is the number of encoder/decoder layers
     for i in range(min(len(m.h), len(pm.h))):
         m.h[i].ln_1.weight = pm.h[i].ln_1.weight if share_para else copy.copy(pm.h[i].ln_1.weight)
         m.h[i].ln_1.bias = pm.h[i].ln_1.bias if share_para else copy.copy(pm.h[i].ln_1.bias)

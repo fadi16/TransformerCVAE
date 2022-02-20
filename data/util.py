@@ -294,11 +294,16 @@ def collate_fn(samples):
     # tokenizer.convert_tokens_to_ids('<|startoftext|>') = 50257
     input = torch.LongTensor([ip[2] + [50256] * (max_len - len(ip[2])) for ip in samples])
 
+    inp_1 = input[:, :-1]
+    inp_cont = input[:, 1:].contiguous()
+    inp_mask = input_mask[:, 1:]
+
     return x_mask, x, y_mask, y, input[:, :-1], input[:, 1:].contiguous(), input_mask[:, 1:]
 
 
 def prepare_dataset(data_dir, dataset_name, tokenizer, train_bsz, train_seq_len, val_bsz, val_seq_len, test_bsz=1,
-                    test_seq_len=1024, data_type='t0', num_workers=1, make_train=True, make_val=True, make_test=False):
+                    test_seq_len=1024, data_type='t0', num_workers=1, make_train=True, make_val=True, make_test=False,
+                    with_retrieval=True):
     # data_dir, dataset_name, tokenizer, train_bsz, train_seq_len, val_bsz, val_seq_len, num_workers = args.data_dir, args.dataset, tokenizer, batch_schedule[cur_b_schedule][0], batch_schedule[cur_b_schedule][1], batch_schedule[-1][0], batch_schedule[-1][1], args.workers
 
     loaders = []
@@ -436,13 +441,13 @@ def prepare_dataset(data_dir, dataset_name, tokenizer, train_bsz, train_seq_len,
         plots_paragraphs = plots_paragraphs.replace(os.linesep, " ")
         plots = plots_paragraphs.split("<EOS>")
         plots = plots[:len(plots) - 1]
-        # use 5000 plots for small dataset
-        plots = plots[:5000]
+        # use 5500 plots for small dataset
+        plots = plots[:5500]
 
         with open(data_titles, errors='ignore') as ft:
             titles = ft.readlines()
-        # use 5000 titles
-        titles = titles[:5000]
+        # use 5500 titles
+        titles = titles[:5500]
 
         print("no. plots = ", len(plots))
         print("np. titles = ", len(titles))
@@ -498,51 +503,36 @@ def prepare_dataset(data_dir, dataset_name, tokenizer, train_bsz, train_seq_len,
     elif dataset_name == 'wtv2':
         EXPLANATION = "explanation"
         QUESTION_AND_ANSWER = "question_and_answer"
-        EXPLANATION_TYPE = "explanation_type"
-        QUESTION_ANSWER_AND_EXPLANATION_TYPE_SEP = " && "
 
         train_collate_fn = collate_fn
         val_collate_fn = collate_fn
         test_collate_fn = collate_fn
 
         print('Loading Word Tree v2 dataset...')
-        train_data_path = os.path.join(data_dir, 'wordTreev2/train_data_with_explanations_types.csv')
-        val_data_path = os.path.join(data_dir, 'wordTreev2/dev_data_with_explanations_types.csv')
-        test_data_path = os.path.join(data_dir, 'wordTreev2/test_data_with_explanations_types.csv')
+        train_data_path = os.path.join(data_dir, 'wordTreev2/train_data_wed.csv')
+        val_data_path = os.path.join(data_dir, 'wordTreev2/dev_data_wed.csv')
+        test_data_path = os.path.join(data_dir, 'wordTreev2/test_data_wed.csv')
 
         # train
-        train_question_answer_features = []
         df_train = pd.read_csv(train_data_path, delimiter="\t")
         train_explanations = df_train[EXPLANATION]
         train_questions_and_answers = df_train[QUESTION_AND_ANSWER]
-        train_explanation_types = df_train[EXPLANATION_TYPE]
-        for i in range(len(train_explanation_types)):
-            train_question_answer_features.append(train_questions_and_answers[i] + QUESTION_ANSWER_AND_EXPLANATION_TYPE_SEP + train_explanation_types[i])
-        assert len(train_question_answer_features) == len(train_explanations)
+
 
         # val
-        val_question_answer_features = []
         df_val = pd.read_csv(val_data_path, delimiter="\t")
         val_explanations = df_val[EXPLANATION]
         val_questions_and_answers = df_val[QUESTION_AND_ANSWER]
-        val_explanation_types = df_val[EXPLANATION_TYPE]
-        for i in range(len(val_explanation_types)):
-            val_question_answer_features.append(val_questions_and_answers[i] + QUESTION_ANSWER_AND_EXPLANATION_TYPE_SEP + val_explanation_types[i])
-        assert len(val_question_answer_features) == len(val_explanations)
+
 
         # test
-        test_question_answer_features = []
         df_test = pd.read_csv(test_data_path, delimiter="\t")
         test_explanations = df_test[EXPLANATION]
         test_questions_and_answers = df_test[QUESTION_AND_ANSWER]
-        test_explanation_types = df_test[EXPLANATION_TYPE]
-        for i in range(len(test_explanation_types)):
-            test_question_answer_features.append(test_questions_and_answers[i] + QUESTION_ANSWER_AND_EXPLANATION_TYPE_SEP + test_explanation_types[i])
-        assert len(test_question_answer_features) == len(test_explanations)
 
-        train_text = [(t, p) for t, p in zip(train_question_answer_features, train_explanations) if t.strip() != '' and p.strip() != '']
-        val_text = [(t, p) for t, p in zip(val_question_answer_features, val_explanations) if t.strip() != '' and p.strip() != '']
-        test_text = [(t, p) for t, p in zip(test_question_answer_features, test_explanations) if t.strip() != '' and p.strip() != '']
+        train_text = [(t, p) for t, p in zip(train_questions_and_answers, train_explanations) if t.strip() != '' and p.strip() != '']
+        val_text = [(t, p) for t, p in zip(val_questions_and_answers, val_explanations) if t.strip() != '' and p.strip() != '']
+        test_text = [(t, p) for t, p in zip(test_questions_and_answers, test_explanations) if t.strip() != '' and p.strip() != '']
 
         print('Done.')
 
