@@ -277,7 +277,7 @@ def main():
     args = parser.parse_args('test --batch-sizes 2 --seq-lens 1024 '
                              '--iters-no-cyclic-annealing 4412 --add_input --add_attn --attn_proj_vary '
                              '--learn_prior --lr 3e-4 --fp16 --fp16_opt_level O0 --iterations 13236 --warmup -1 '
-                             '--fix-pretrained-iters 4412 --with-apex'.split())  # wi.12.proj_vary_beta_cvae
+                             '--fix-pretrained-iters 4412 --with-apex --with-retrieval --no-similar-hypotheses 20 --no-facts-to-retrieve 6'.split())  # wi.12.proj_vary_beta_cvae
 
     if args.model_type == 'cvae':
         args.learn_prior = True
