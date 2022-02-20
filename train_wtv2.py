@@ -47,16 +47,27 @@ def compute_loss(device, model, x_mask, x_tokens, y_mask, y_tokens, input_tokens
     outputs = model(input_ids=input_tokens, attention_mask=mask, x_mask=x_mask, x_tokens=x_tokens, y_mask=y_mask,
                     y_tokens=y_tokens)
     logits = outputs[0]
+
     kl_loss = outputs[-1]
     num_logits = logits.size(-1)
 
+    #print("")
+    #print("---------------------")
+    #print("target_tokens.size() = ", target_tokens.size())
+    #print("mask.size() = ", mask.size())
     # Perform masking
+    # todo: val_step does not perform masking, this might be why it fails with batch_size > 1
     if mask is not None:
         mask = mask.type(torch.bool)
         mask = mask.to(device)
         logits = logits.masked_select(mask.unsqueeze(-1))
         target_tokens = target_tokens.masked_select(mask)
 
+    #print("logits.size() = ", logits.size())
+    #print("target_tokens.size() = ", target_tokens.size())
+    #print("logits.view(-1, num_logits).size() = ", logits.view(-1, num_logits).size())
+    #print("target_tokens.view(-1).size() = ", target_tokens.view(-1).size())
+    #print("-" * 20)
     ce_loss = loss_fn(logits.view(-1, num_logits), target_tokens.view(-1))
     kl_loss = kl_loss.mean()
     loss = ce_loss.mean() + beta * kl_loss
@@ -275,9 +286,10 @@ def main():
     parser.add_argument('--with-apex', action="store_true")
 
     args = parser.parse_args('test --batch-sizes 2 --seq-lens 1024 '
-                             '--iters-no-cyclic-annealing 4412 --add_input --add_attn --attn_proj_vary '
-                             '--learn_prior --lr 3e-4 --fp16 --fp16_opt_level O0 --iterations 13236 --warmup -1 '
-                             '--fix-pretrained-iters 4412 --with-retrieval --with-apex --no-similar-hypotheses 20 --no-facts-to-retrieve 6'.split())  # wi.12.proj_vary_beta_cvae
+                             '--iters-no-cyclic-annealing 2206 --add_input --add_attn --attn_proj_vary '
+                             '--learn_prior --lr 5e-5 --fp16 --fp16_opt_level O0 --iterations 13236 --warmup -1 '
+                             '--fix-pretrained-iters 2206 --with-apex '
+                             '--with-retrieval --no-similar-hypotheses 20 --no-facts-to-retrieve 6'.split())  # wi.12.proj_vary_beta_cvae
 
     if args.model_type == 'cvae':
         args.learn_prior = True
@@ -366,14 +378,20 @@ def main():
     cur_b_schedule = len(batch_schedule) - 1 if args.switch_time == 0 else 0
     print('Batch schedule', batch_schedule)
 
+    print("train batch size = ", batch_schedule[cur_b_schedule][0])
+    print("train seq len = ", batch_schedule[cur_b_schedule][1])
+
+    print("val batch size = ", batch_schedule[-1][0])
+    print("val seq len = ", batch_schedule[-1][1])
+
     train_loader, val_loader, test_loader = wt_ut.prepare_dataset(data_dir=args.data_dir,
                                                                   tokenizer=tokenizer,
                                                                   train_bsz=batch_schedule[cur_b_schedule][0],
                                                                   train_seq_len=batch_schedule[cur_b_schedule][1],
-                                                                  val_bsz=batch_schedule[-1][0],
+                                                                  val_bsz=1,
                                                                   val_seq_len=batch_schedule[-1][1],
                                                                   test_bsz=batch_schedule[-1][0],
-                                                                  test_seq_len=batch_schedule[-1][1],
+                                                                  test_seq_len=1,
                                                                   num_workers=1,
                                                                   make_train=True,
                                                                   make_val=True,
@@ -439,8 +457,10 @@ def main():
                     target_tokens = target_tokens.unsqueeze(0)
                 n, l = target_tokens.size()
 
+                #print("target_tokens.size() = ", target_tokens.size())
                 text = target_tokens[0, :].tolist()
                 logprob = ce_loss.tolist()
+                #print("ce_loss.size() = ", ce_loss.size())
                 assert len(text) == len(logprob)
 
                 # only for story
@@ -559,6 +579,7 @@ def main():
         n_samples = 0
         bleu4_sum = 0.0
         rouge_scores_values_sum = [0.0] * 9
+        eval_score = -1
 
         args.nsamples = 1
         args.batch_size = 1
@@ -706,11 +727,16 @@ def main():
     test_plot(val_loader, e)
     val_step(val_loader)
     generate(val_loader, num_iters)
-    torch.save(VAE.state_dict(), os.path.join(save_folder, 'model_' + '{:07d}'.format(num_iters) + '.pt'))
+    torch.save(VAE.state_dict(), os.path.join(save_folder, 'model_' + '{0}'.format(e) + '.pt'))
     gpt2_model.save_pretrained(save_folder)
     tokenizer.save_pretrained(save_folder)
 
     best_bleurt_score = -1
+
+    no_cycles = 4
+    total_no_beta_iters = args.iterations - args.iters_no_cyclic_annealing
+    no_iter_in_cycle = total_no_beta_iters // no_cycles
+
     while num_iters < args.iterations:
         # Run epoch
         st = time.time()
@@ -726,24 +752,19 @@ def main():
                 if num_iters < args.iters_no_cyclic_annealing:
                     beta = 1
                 else:
-                    no_cycles = 4
-                    total_no_iter = args.iterations
-                    no_iter_in_cycle = total_no_iter // no_cycles
                     # new cycle beta is zero
-                    if num_iters % no_iter_in_cycle == 0:
+                    if (num_iters - args.iters_no_cyclic_annealing) % no_iter_in_cycle == 0:
                         logging.info('KL annealing restart')
                         beta = 0
                     else:
                         # anneal beta from 0 to 1 for first half of the cycle then fix it at 1
-                        tau = ((num_iters - 1) % (total_no_iter / no_cycles)) / (total_no_iter / no_cycles)
+                        tau = ((num_iters - args.iters_no_cyclic_annealing - 1) % (total_no_beta_iters / no_cycles)) / (total_no_beta_iters / no_cycles)
                         # proportion used to increase beta within a cycle
                         r = 0.5
                         if tau <= r:
-                            beta = min(1, beta + (1 / r) * (1 / (total_no_iter / no_cycles)))
+                            beta = min(1, beta + (1 / r) * (1 / (total_no_beta_iters / no_cycles)))
                         else:
                             beta = 1
-
-                logging.info("beta = {0}".format(beta))
 
                 if not tuning_all and num_iters >= tuning_all_after_iters:
                     for name, parameter in VAE.named_parameters():
@@ -808,8 +829,8 @@ def main():
                        os.path.join(save_folder, 'model_' + '{0}'.format(e) + '.pt'))
             gpt2_model.save_pretrained(save_folder)
             tokenizer.save_pretrained(save_folder)
-            e += 1
             logging.info("Training loop. The ith epoch completed: %d" % e)
+            e += 1
 
     torch.save(VAE.state_dict(), os.path.join(save_folder, 'model_latest.pt'))
     gpt2_model.save_pretrained(save_folder)
