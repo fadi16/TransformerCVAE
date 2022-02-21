@@ -286,10 +286,12 @@ def main():
     parser.add_argument('--with-apex', action="store_true")
 
     args = parser.parse_args('test --batch-sizes 2 --seq-lens 1024 '
-                             '--iters-no-cyclic-annealing 2206 --add_input --add_attn --attn_proj_vary '
-                             '--learn_prior --lr 5e-5 --fp16 --fp16_opt_level O0 --iterations 13236 --warmup -1 '
-                             '--fix-pretrained-iters 2206 --with-apex '
-                             '--with-retrieval --no-similar-hypotheses 20 --no-facts-to-retrieve 6'.split())  # wi.12.proj_vary_beta_cvae
+                             '--iters-no-cyclic-annealing 0 --add_input --add_attn --attn_proj_vary '
+                             '--learn_prior --lr 5e-5 --fp16 --fp16_opt_level O0 --iterations 5515 --warmup -1 '
+                             '--fix-pretrained-iters 0 --with-apex '
+                             '--with-retrieval --no-similar-hypotheses 20 --no-facts-to-retrieve 6'
+                             ' --load out/test'
+                             ' '.split())  # wi.12.proj_vary_beta_cvae
 
     if args.model_type == 'cvae':
         args.learn_prior = True
@@ -332,22 +334,28 @@ def main():
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir=cache_dir)
     # Hack to allow tokenizing longer sequences.
     tokenizer.max_len = int(1e12)
-    gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2', cache_dir=cache_dir)
-    print('gpt2_params:', num_params(gpt2_model))  # gpt2: 124439808
+
+    if not args.load:
+        gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2', cache_dir=cache_dir)
+        print('gpt2_params:', num_params(gpt2_model))  # gpt2: 124439808
+
     config = GPT2Config()
 
     VAE = VAEModel(config, add_input=args.add_input, add_attn=args.add_attn, add_softmax=args.add_softmax,
                    attn_proj_vary=args.attn_proj_vary, learn_prior=args.learn_prior)
-    init_para_frompretrained(VAE.transformer, gpt2_model.transformer, share_para=True)
-    init_para_frompretrained(VAE.encoder, gpt2_model.transformer, share_para=False)
-    if args.learn_prior:
-        init_para_frompretrained(VAE.encoder_prior, VAE.encoder, share_para=True)
-        VAE.encoder_prior.averageSelfAttention.attention_weights = VAE.encoder.averageSelfAttention.attention_weights
-    VAE.lm_head.weight = gpt2_model.lm_head.weight
-    if VAE.add_softmax:
-        VAE.lm_head_rep = Conv1D(*gpt2_model.lm_head.weight.size())
-    print('VAE_params:', num_params(VAE))  # 286694400
-    if args.load:
+
+    if not args.load:
+        init_para_frompretrained(VAE.transformer, gpt2_model.transformer, share_para=True)
+        init_para_frompretrained(VAE.encoder, gpt2_model.transformer, share_para=False)
+        if args.learn_prior:
+            init_para_frompretrained(VAE.encoder_prior, VAE.encoder, share_para=True)
+            VAE.encoder_prior.averageSelfAttention.attention_weights = VAE.encoder.averageSelfAttention.attention_weights
+        VAE.lm_head.weight = gpt2_model.lm_head.weight
+        if VAE.add_softmax:
+            VAE.lm_head_rep = Conv1D(*gpt2_model.lm_head.weight.size())
+        print('VAE_params:', num_params(VAE))  # 286694400
+
+    else:
         print('Loading model weights...')
         state = torch.load(os.path.join(args.load, 'model_latest.pt'))  # , map_location='cpu' model_latest.pt
         if 'module' in list(state.keys())[0]:  # model_path is data parallel model with attr 'module'
@@ -360,15 +368,19 @@ def main():
     print('Done.')
 
     # fix pre-trained parameters before certain iterations
-    tuning_all_after_iters = args.fix_pretrained_iters
-    tuning_all = False
-    for name, parameter in VAE.named_parameters():
-        # print((name, parameter.requires_grad))
-        new_pars = ['c_z', 'attention_weights', 'mean', 'logvar', 'input_proj', 'attn_proj', 'Nu_fc1', 'Nu_fc2',
-                    'lm_head_rep']
-        # if param is not in the list of new_param it's a pretrained param and must be fixed initially
-        if not any([True if n in name else False for n in new_pars]):
-            parameter.requires_grad = False
+    if not args.load:
+        tuning_all_after_iters = args.fix_pretrained_iters
+        tuning_all = False
+        for name, parameter in VAE.named_parameters():
+            # print((name, parameter.requires_grad))
+            new_pars = ['c_z', 'attention_weights', 'mean', 'logvar', 'input_proj', 'attn_proj', 'Nu_fc1', 'Nu_fc2',
+                        'lm_head_rep']
+            # if param is not in the list of new_param it's a pretrained param and must be fixed initially
+            if not any([True if n in name else False for n in new_pars]):
+                parameter.requires_grad = False
+    else:
+        tuning_all_after_iters = 0
+        tuning_all = True
 
     print('Setup data...')
     # Batch and sequence length schedule
@@ -390,8 +402,8 @@ def main():
                                                                   train_seq_len=batch_schedule[cur_b_schedule][1],
                                                                   val_bsz=1,
                                                                   val_seq_len=batch_schedule[-1][1],
-                                                                  test_bsz=batch_schedule[-1][0],
-                                                                  test_seq_len=1,
+                                                                  test_bsz=1,
+                                                                  test_seq_len=batch_schedule[-1][1],
                                                                   num_workers=1,
                                                                   make_train=True,
                                                                   make_val=True,
@@ -546,15 +558,15 @@ def main():
             #  Consider selecting a value between 5 and 50. Different values can result in significantly different results.
             X_emb_2d = TSNE(n_components=2, verbose=1, perplexity=15).fit_transform(X_emb)
 
-            def remove_outliers(data, r=2.0):
-                outliers_data = abs(data - np.mean(data, axis=0)) >= r * np.std(data, axis=0)
-                outliers = np.any(outliers_data, axis=1)
-                keep = np.logical_not(outliers)
-                return outliers, keep
-
-            outliers, keep = remove_outliers(X_emb_2d)
-            X_emb_2d = X_emb_2d[keep, :]
-            y = [l for l, k in zip(y, keep.tolist()) if k]
+            # def remove_outliers(data, r=2.0):
+            #     outliers_data = abs(data - np.mean(data, axis=0)) >= r * np.std(data, axis=0)
+            #     outliers = np.any(outliers_data, axis=1)
+            #     keep = np.logical_not(outliers)
+            #     return outliers, keep
+            #
+            # outliers, keep = remove_outliers(X_emb_2d)
+            # X_emb_2d = X_emb_2d[keep, :]
+            # y = [l for l, k in zip(y, keep.tolist()) if k]
 
             # plot
             fig = plt.figure(figsize=(4, 4))
@@ -706,7 +718,7 @@ def main():
                                            references=reference_text,
                                            questions=questions,
                                            best_and_worst=False)
-            v_writer.add_scalar("Validation - bleurt score", eval_score, training_epoch)
+            v_writer.add_scalar("Validation_bleurt_score", eval_score, training_epoch)
 
             predictions_and_actuals_df.to_csv(os.path.join("actual_vs_generated_{0}.csv".format(training_epoch)))
 
@@ -727,9 +739,7 @@ def main():
     test_plot(val_loader, e)
     val_step(val_loader)
     generate(val_loader, num_iters)
-    torch.save(VAE.state_dict(), os.path.join(save_folder, 'model_' + '{0}'.format(e) + '.pt'))
-    gpt2_model.save_pretrained(save_folder)
-    tokenizer.save_pretrained(save_folder)
+
 
     best_bleurt_score = -1
 
@@ -817,6 +827,7 @@ def main():
             test_plot(val_loader, e)
             val_step(val_loader)
             current_bleurt_score = generate(val_loader, num_iters, generate_all=True, training_epoch=e)
+            logging.info("bleurt score = {0}".format(current_bleurt_score))
             if current_bleurt_score > best_bleurt_score:
                 best_bleurt_score = current_bleurt_score
                 logging.info("best bleurt score is: {0}, and is from epoch: {1}".format(best_bleurt_score, e))
@@ -827,13 +838,15 @@ def main():
             logging.info('\n------------------------------------------------------')
             torch.save(VAE.state_dict(),
                        os.path.join(save_folder, 'model_' + '{0}'.format(e) + '.pt'))
-            gpt2_model.save_pretrained(save_folder)
+            if not args.load:
+                gpt2_model.save_pretrained(save_folder)
             tokenizer.save_pretrained(save_folder)
             logging.info("Training loop. The ith epoch completed: %d" % e)
             e += 1
 
     torch.save(VAE.state_dict(), os.path.join(save_folder, 'model_latest.pt'))
-    gpt2_model.save_pretrained(save_folder)
+    if not args.load:
+        gpt2_model.save_pretrained(save_folder)
     tokenizer.save_pretrained(save_folder)
     print('Training complete.')
     logging.info("Training complete.")
