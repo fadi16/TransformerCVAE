@@ -530,6 +530,7 @@ def get_generated_no_exact_repeated_facts(generated_text_with_separators):
         facts_no_rep = []
         facts = generated_exp.split("$$")
         for fact in facts:
+            fact = fact.strip()
             if fact not in facts_no_rep:
                 facts_no_rep.append(fact)
             else:
@@ -562,6 +563,7 @@ def preprocess_predictions_df(df):
             x.replace(",", " ").replace("[", "").replace("]", "").replace("  ", " ").replace("'", "").replace(
                 "<|endoftext|>", ""))
     for x in df["Questions"]:
+        x.replace("<|endoftext|>", "")
         questions_and_answers_with_separator.append(x)
         if "@@" in x:
             x = x.split("@@")[0]
